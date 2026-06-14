@@ -58,9 +58,8 @@ serde_json = { version = "1", features = ["preserve_order"] }
 rand = "0.9.0"
 
 [package.metadata.docs.rs]
-# Build only for Linux x86_64 (docs.rs default); enables bundled SQLite so
-# the crate compiles without a system libsqlite3-dev.
-features = ["bundled-sqlite"]
+# Build only for Linux x86_64. The default features bundle DuckDB and SQLite
+# from source, so the crate compiles without any system C libraries.
 targets = ["x86_64-unknown-linux-gnu"]
 rustdoc-args = ["--cfg", "docsrs"]
 
