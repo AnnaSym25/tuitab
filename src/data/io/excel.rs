@@ -14,7 +14,7 @@ pub(super) fn load_excel(path: &Path) -> Result<DataFrame> {
     }
     let range = workbook
         .worksheet_range(&sheet_names[0])
-        .ok_or_else(|| eyre!("Cannot read first sheet"))??;
+        .map_err(|e| eyre!("Cannot read first sheet: {e}"))?;
 
     parse_excel_range(range)
 }
@@ -25,7 +25,7 @@ pub fn load_excel_sheet_by_name(path: &Path, sheet_name: &str) -> Result<DataFra
     let mut workbook = open_workbook_auto(path)?;
     let range = workbook
         .worksheet_range(sheet_name)
-        .ok_or_else(|| eyre!("Sheet '{}' not found", sheet_name))??;
+        .map_err(|e| eyre!("Sheet '{}' not found: {e}", sheet_name))?;
 
     parse_excel_range(range)
 }
@@ -104,7 +104,7 @@ pub(super) fn save_xlsx(df: &DataFrame, path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn parse_excel_range(range: calamine::Range<calamine::DataType>) -> Result<DataFrame> {
+fn parse_excel_range(range: calamine::Range<calamine::Data>) -> Result<DataFrame> {
     let all_rows: Vec<Vec<String>> = range
         .rows()
         .map(|row| row.iter().map(|c| c.to_string()).collect())

@@ -372,7 +372,7 @@ impl App {
         let total = visible.len();
         let take = n.min(total);
         let mut rng = rand::rng();
-        let chosen: Vec<usize> = visible.choose_multiple(&mut rng, take).copied().collect();
+        let chosen: Vec<usize> = visible.sample(&mut rng, take).copied().collect();
         s.dataframe.selected_rows.clear();
         s.dataframe.selected_rows.extend(chosen);
         self.mode = AppMode::Normal;
