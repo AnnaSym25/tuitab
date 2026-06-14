@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-06-14
+
+### Changed
+- Bump dependencies: `rusqlite` 0.31 → 0.40, `calamine` 0.22 → 0.35, `rust_xlsxwriter` 0.80 → 0.95, `rand` 0.9 → 0.10, `serde_json` → 1.0.150. Excel reading migrated to calamine's `Data` cell type and its `Result`-returning `worksheet_range`; random-row selection migrated to rand's renamed `sample` API. No user-facing behaviour change.
+
+### Documentation
+- Overhauled the README with animated demos and added a bilingual (English / Русский) documentation set under `docs/`.
+
 ## [0.4.2] - 2026-05-05
 
 ### Fixed
