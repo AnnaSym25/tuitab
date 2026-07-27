@@ -11,6 +11,12 @@ pub struct SaveState {
     pub autocomplete_prefix: String,
     pub autocomplete_candidates: Vec<String>,
     pub autocomplete_idx: usize,
+    /// Shapes offered for a table with no document behind it, and the highlighted one.
+    /// Remembered between saves so a second export does not ask twice.
+    pub shapes: Vec<crate::data::io::doc_io::Shape>,
+    pub shape_index: usize,
+    /// Target path, held while the shape popup is up.
+    pub pending_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Default)]

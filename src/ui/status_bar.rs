@@ -43,6 +43,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         AppMode::RenamingColumn => " RENAME ",
         AppMode::InsertingColumn => " INSERT ",
         AppMode::ConfirmQuit => " CONFIRM",
+        AppMode::SaveShapeSelect => " SHAPE  ",
+        AppMode::OpenAsSelect => " OPEN AS",
         AppMode::YPrefix => " COPY    ",
         AppMode::CopyFormatSelect => " COPY-FMT",
         AppMode::CurrencySelect => " CURRENCY",

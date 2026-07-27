@@ -306,6 +306,22 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
         },
 
         // z-prefix modifier
+        AppMode::SaveShapeSelect => match key.code {
+            KeyCode::Up | KeyCode::Char('k') => Action::ChoiceUp,
+            KeyCode::Down | KeyCode::Char('j') => Action::ChoiceDown,
+            KeyCode::Enter => Action::ApplySaveShape,
+            KeyCode::Esc | KeyCode::Char('q') => Action::CancelSaveShape,
+            _ => Action::None,
+        },
+
+        AppMode::OpenAsSelect => match key.code {
+            KeyCode::Up | KeyCode::Char('k') => Action::ChoiceUp,
+            KeyCode::Down | KeyCode::Char('j') => Action::ChoiceDown,
+            KeyCode::Enter => Action::ApplyOpenAs,
+            KeyCode::Esc | KeyCode::Char('q') => Action::CancelOpenAs,
+            _ => Action::None,
+        },
+
         AppMode::ZPrefix => match key.code {
             KeyCode::Enter => Action::OpenCell,
             KeyCode::Char('e') => Action::StartRenameColumn,
@@ -323,6 +339,7 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
             KeyCode::Char('r') => Action::StartColReplace,
             KeyCode::Char('g') => Action::StartColRegexpReplace,
             KeyCode::Char('x') => Action::StartColSplit,
+            KeyCode::Char('o') => Action::OpenAs,
             KeyCode::Esc => Action::CancelZPrefix,
             _ => Action::CancelZPrefix,
         },

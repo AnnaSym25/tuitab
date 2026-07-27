@@ -72,7 +72,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         | AppMode::JoinOverviewSelect
         | AppMode::SPrefix
         | AppMode::SelectRandomInput
-        | AppMode::DedupTiebreakerSelect => {
+        | AppMode::DedupTiebreakerSelect
+        | AppMode::SaveShapeSelect
+        | AppMode::OpenAsSelect => {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -255,6 +257,34 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             }
             if app.mode == AppMode::CopyFormatSelect {
                 popup::render_copy_format_popup(frame, app, frame.area());
+            }
+            if app.mode == AppMode::SaveShapeSelect {
+                let items: Vec<(String, String)> = app
+                    .save
+                    .shapes
+                    .iter()
+                    .map(|s| (s.label().to_string(), s.hint().to_string()))
+                    .collect();
+                popup::render_choice_popup(
+                    frame,
+                    "Save this table as",
+                    &items,
+                    app.save.shape_index,
+                    frame.area(),
+                );
+            }
+            if app.mode == AppMode::OpenAsSelect {
+                let items: Vec<(String, String)> = crate::app::OPEN_AS_FORMATS
+                    .iter()
+                    .map(|f| (f.name().to_string(), String::new()))
+                    .collect();
+                popup::render_choice_popup(
+                    frame,
+                    "Open as",
+                    &items,
+                    app.save.shape_index,
+                    frame.area(),
+                );
             }
             if app.mode == AppMode::SelectRandomInput {
                 popup::render_input_popup(

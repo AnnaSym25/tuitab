@@ -1,6 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 mod aggregator;
+mod choice;
 mod dedup_tiebreaker;
 mod help;
 mod input;
@@ -9,6 +10,7 @@ mod misc;
 mod type_select;
 
 pub use aggregator::{render_aggregator_popup, render_partition_select_popup};
+pub use choice::render_choice_popup;
 pub use dedup_tiebreaker::render_dedup_tiebreaker_popup;
 pub use help::render_help_popup;
 pub use input::render_input_popup;

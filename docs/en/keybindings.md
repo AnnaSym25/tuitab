@@ -76,6 +76,7 @@ See [Expressions](expressions.md) for the `|!=` filter language.
 | `zr` | Find & replace text in the column |
 | `zg` | Find & replace with a regex |
 | `zx` | Split the column by a delimiter |
+| `zo` | On a directory listing: reopen the selected file as a chosen format |
 | `zEnter` | Dive into the node in the current cell (JSON/YAML/TOML) |
 
 ## Rows, sheets & analytics
@@ -117,6 +118,11 @@ marked with `zs`.
 | Key | Action |
 |-----|--------|
 | `Ctrl+S` | Save / export / convert (CSV, TSV, Parquet, JSON, JSONL, YAML, TOML, Excel, or SQLite) |
+
+Saving a plain table (CSV, Parquet, SQL, a pivot) to JSON/YAML/TOML asks which shape to
+produce — `[{col: val}, …]`, `{col: [val, …]}`, or `{a: b}` for a two-column table — and
+remembers the answer for the rest of the session. A sheet that already carries a
+document is never asked: its tree is re-serialised as it is.
 | `R` | Reload the file from disk |
 | `U` / `Shift+U` | Undo (up to 50 steps) |
 | `Ctrl+R` | Redo |

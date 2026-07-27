@@ -1527,6 +1527,13 @@ impl App {
         }
     }
     pub fn open_directory_row(&mut self) {
+        self.open_directory_row_as(None);
+    }
+
+    /// Open the selected file from a directory listing.  `forced` overrides both the
+    /// extension and content sniffing — the `zo` escape hatch for a file whose name and
+    /// contents are both uninformative.
+    pub fn open_directory_row_as(&mut self, forced: Option<crate::data::doc::Format>) {
         let s = self.stack.active();
         let df = &s.dataframe;
 
@@ -1589,7 +1596,9 @@ impl App {
                         self.status_message = format!("Failed to open directory: {}", e);
                     }
                 }
-            } else if supported {
+            // An explicit "open as" overrides the listing's own idea of what it can
+            // handle — saying "this is YAML" is the whole point of the escape hatch.
+            } else if supported || forced.is_some() {
                 let target_ext = target_path
                     .extension()
                     .and_then(|e| e.to_str())
@@ -1608,7 +1617,10 @@ impl App {
                         Option<std::path::PathBuf>,
                     ),
                     _,
-                > = if target_ext == "db" {
+                > = if forced.is_some() {
+                    crate::data::io::load_file_as(&target_path, None, forced)
+                        .map(|(df, doc)| (df, doc, None, None, None))
+                } else if target_ext == "db" {
                     match crate::data::io::load_sqlite_overview(&target_path) {
                         Ok(df) => Ok((df, None, Some(target_path.clone()), None, None)),
                         Err(_) => crate::data::io::load_duckdb_overview(&target_path)
@@ -1630,7 +1642,7 @@ impl App {
                             .map(|(df, doc)| (df, doc, None, None, None)),
                     }
                 } else {
-                    crate::data::io::load_file_with_doc(&target_path, None)
+                    crate::data::io::load_file_as(&target_path, None, forced)
                         .map(|(df, doc)| (df, doc, None, None, None))
                 };
                 match load_result {
@@ -2924,6 +2936,15 @@ fn keep_failed_edit(tmp_path: &Path) -> Option<std::path::PathBuf> {
     std::fs::copy(tmp_path, &kept).ok()?;
     Some(kept)
 }
+
+/// Formats offered by `zo` ("open as") on a directory listing, for the case the
+/// extension lies and the contents are ambiguous enough that sniffing declines.
+pub const OPEN_AS_FORMATS: [crate::data::doc::Format; 4] = [
+    crate::data::doc::Format::Json,
+    crate::data::doc::Format::Jsonl,
+    crate::data::doc::Format::Yaml,
+    crate::data::doc::Format::Toml,
+];
 
 /// Expand a leading `~` to the user's home directory.
 fn expand_tilde(input: &str) -> std::path::PathBuf {

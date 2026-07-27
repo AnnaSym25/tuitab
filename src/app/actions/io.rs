@@ -59,16 +59,33 @@ impl App {
                 None
             }
             Action::ApplySave => {
-                let path = crate::app::expand_tilde(self.save.input.as_str());
+                // A path parked by the shape popup means the question has been answered
+                // already; taking it here is what stops the two from bouncing forever.
+                let answered = self.save.pending_path.take();
+                let path = answered
+                    .clone()
+                    .unwrap_or_else(|| crate::app::expand_tilde(self.save.input.as_str()));
+                // A table with no document behind it can become several different
+                // documents, and only the user knows which one they meant — ask, once,
+                // and remember the answer for the rest of the session.
+                if answered.is_none() && self.needs_shape_for(&path) {
+                    self.save.pending_path = Some(path);
+                    self.save.shapes = crate::data::io::doc_io::Shape::options(
+                        self.stack.active().dataframe.col_count(),
+                    );
+                    self.save.shape_index = self.save.shape_index.min(self.save.shapes.len() - 1);
+                    self.mode = AppMode::SaveShapeSelect;
+                    return None;
+                }
+                let shape = self.chosen_shape();
                 let sheet = self.stack.active();
                 // A doc-backed sheet is written by re-serialising its tree, so structure
-                // survives and changing the extension converts between formats.  A plain
-                // table is turned into records first.
+                // survives and changing the extension converts between formats.
                 let result = crate::data::io::save_file_as(
                     &sheet.dataframe,
                     sheet.doc.as_ref(),
                     &path,
-                    crate::data::io::doc_io::Shape::Records,
+                    shape,
                     &sheet.title,
                 );
                 match result {
@@ -89,12 +106,77 @@ impl App {
                 self.save.error = None;
                 None
             }
+            Action::ChoiceUp => {
+                self.save.shape_index = self.save.shape_index.saturating_sub(1);
+                None
+            }
+            Action::ChoiceDown => {
+                let len = if self.mode == AppMode::OpenAsSelect {
+                    crate::app::OPEN_AS_FORMATS.len()
+                } else {
+                    self.save.shapes.len()
+                };
+                self.save.shape_index = (self.save.shape_index + 1).min(len.saturating_sub(1));
+                None
+            }
+            Action::ApplySaveShape => {
+                // Returning Some() here would only pass the action further down the
+                // handler chain, not run it — the save has to be re-entered directly.
+                self.mode = AppMode::Saving;
+                self.handle_io_action(Action::ApplySave)
+            }
+            Action::CancelSaveShape => {
+                self.save.pending_path = None;
+                self.mode = AppMode::Saving;
+                None
+            }
+            Action::OpenAs => {
+                if self.stack.active().is_dir_sheet {
+                    self.save.shape_index = 0;
+                    self.mode = AppMode::OpenAsSelect;
+                } else {
+                    self.mode = AppMode::Normal;
+                    self.status_message =
+                        "Open as… works on a directory listing".to_string();
+                }
+                None
+            }
+            Action::ApplyOpenAs => {
+                let fmt = crate::app::OPEN_AS_FORMATS[self.save.shape_index];
+                self.mode = AppMode::Normal;
+                self.open_directory_row_as(Some(fmt));
+                None
+            }
+            Action::CancelOpenAs => {
+                self.mode = AppMode::Normal;
+                None
+            }
             Action::SavingAutocomplete => {
                 self.saving_autocomplete();
                 None
             }
             other => Some(other),
         }
+    }
+
+    /// True when saving to `path` has to ask for a shape first: the target is one of
+    /// the document formats and this sheet has no document to re-serialise.
+    fn needs_shape_for(&self, path: &std::path::Path) -> bool {
+        if self.stack.active().doc.is_some() {
+            return false;
+        }
+        path.extension()
+            .and_then(|e| e.to_str())
+            .and_then(crate::data::doc::Format::from_ext)
+            .is_some()
+    }
+
+    fn chosen_shape(&self) -> crate::data::io::doc_io::Shape {
+        self.save
+            .shapes
+            .get(self.save.shape_index)
+            .copied()
+            .unwrap_or_default()
     }
 
     pub(super) fn saving_autocomplete(&mut self) {

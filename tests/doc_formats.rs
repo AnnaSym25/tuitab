@@ -672,3 +672,90 @@ fn an_array_rooted_document_can_still_be_saved_as_toml() {
     let text = std::fs::read_to_string(&path).unwrap();
     assert_eq!(text.matches("[[rows]]").count(), 2, "{}", text);
 }
+
+/// Saving a plain table to a document format asks which shape to produce, remembers the
+/// answer, and does not ask a doc-backed sheet at all.
+#[test]
+fn saving_a_plain_table_asks_for_a_shape() {
+    use tuitab::types::{Action, AppMode};
+
+    let mut app = tuitab::app::App::new(&fixture("prices.csv"), None).unwrap();
+    let target = out("shape-choice.json");
+    let _ = std::fs::remove_file(&target); // a leftover from an earlier run would mask the check
+
+    app.handle_action(Action::SaveFile);
+    app.save.input = tuitab::ui::text_input::TextInput::with_value(
+        target.to_string_lossy().into_owned(),
+    );
+    app.handle_action(Action::ApplySave);
+    assert_eq!(app.mode, AppMode::SaveShapeSelect, "must ask first");
+    assert!(!target.exists(), "nothing written until the shape is chosen");
+
+    // pick `columns` (the second option) and confirm
+    app.handle_action(Action::ChoiceDown);
+    app.handle_action(Action::ApplySaveShape);
+    assert_eq!(app.mode, AppMode::Normal, "{}", app.status_message);
+
+    let json = std::fs::read_to_string(&target).unwrap();
+    assert!(json.trim_start().starts_with('{'), "column shape: {}", json);
+    assert!(json.contains("["), "each column is an array: {}", json);
+
+    // saving again reuses the remembered answer instead of asking twice
+    let second = out("shape-choice-2.json");
+    app.handle_action(Action::SaveFile);
+    app.save.input = tuitab::ui::text_input::TextInput::with_value(
+        second.to_string_lossy().into_owned(),
+    );
+    app.handle_action(Action::ApplySave);
+    assert_eq!(app.mode, AppMode::SaveShapeSelect);
+    app.handle_action(Action::ApplySaveShape);
+    let again = std::fs::read_to_string(&second).unwrap();
+    assert!(again.trim_start().starts_with('{'), "same shape: {}", again);
+}
+
+/// A doc-backed sheet is never asked for a shape — its tree already has one.
+#[test]
+fn saving_a_document_sheet_does_not_ask_for_a_shape() {
+    use tuitab::types::{Action, AppMode};
+
+    let mut app = tuitab::app::App::new(&fixture("app.toml"), None).unwrap();
+    let target = out("no-shape-question.yaml");
+    app.handle_action(Action::SaveFile);
+    app.save.input = tuitab::ui::text_input::TextInput::with_value(
+        target.to_string_lossy().into_owned(),
+    );
+    app.handle_action(Action::ApplySave);
+    assert_eq!(app.mode, AppMode::Normal, "{}", app.status_message);
+    assert!(std::fs::read_to_string(&target).unwrap().contains("host: localhost"));
+}
+
+/// `zo` on a directory listing reopens the selected file as an explicitly chosen format,
+/// overriding both the extension and content sniffing.
+#[test]
+fn open_as_forces_a_format_from_the_directory_listing() {
+    use tuitab::types::{Action, AppMode};
+
+    // a YAML file wearing a .txt extension: sniffing declines, the extension lies
+    std::fs::write(fixture("mislabelled.txt"), "alpha: 1\nbeta: 2\n").unwrap();
+
+    let mut app = tuitab::app::App::new(Path::new("test_data"), None).unwrap();
+    let df = &app.stack.active().dataframe;
+    let row = (0..df.visible_row_count())
+        .find(|r| df.get_physical(*r, 0).contains("mislabelled.txt"))
+        .expect("listed");
+    app.stack.active_mut().table_state.select(Some(row));
+
+    app.handle_action(Action::OpenAs);
+    assert_eq!(app.mode, AppMode::OpenAsSelect);
+    // Json, Jsonl, Yaml, Toml — step down to Yaml
+    app.handle_action(Action::ChoiceDown);
+    app.handle_action(Action::ChoiceDown);
+    app.handle_action(Action::ApplyOpenAs);
+
+    let s = app.stack.active();
+    let doc = s.doc.as_ref().expect("opened as a document");
+    assert_eq!(doc.format(), Format::Yaml);
+    assert_eq!(s.dataframe.visible_row_count(), 2, "alpha and beta");
+
+    let _ = std::fs::remove_file(fixture("mislabelled.txt"));
+}

@@ -78,6 +78,10 @@ pub enum AppMode {
     SelectRandomInput,
     /// Picking tiebreaker column + direction for smart dedup (Shift+S → D, with pinned cols)
     DedupTiebreakerSelect,
+    /// Choosing how a plain table becomes a JSON/YAML/TOML document on save
+    SaveShapeSelect,
+    /// Choosing which format to reopen the selected file as (zo on a directory sheet)
+    OpenAsSelect,
 }
 
 /// Distinguishes a regular data sheet from derived views.
@@ -233,6 +237,16 @@ pub enum Action {
     CycleViewMode,
     /// Expand the cursor column of containers into one column per child
     ExpandColumn,
+    /// Move the highlight in a single-choice popup
+    ChoiceUp,
+    ChoiceDown,
+    /// Accept / dismiss the save-shape popup
+    ApplySaveShape,
+    CancelSaveShape,
+    /// Reopen the selected file as an explicitly chosen format
+    OpenAs,
+    ApplyOpenAs,
+    CancelOpenAs,
     /// Fold an expanded column back into a single container column
     ContractColumn,
 

@@ -303,9 +303,10 @@ fn rename_key(root: &mut Node, path: &[Seg], new_key: &str) -> Result<()> {
 
 /// How a plain table (CSV, Parquet, SQL, pivot — anything with no document behind it)
 /// is turned into a tree before being written as JSON/YAML/TOML.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Shape {
     /// `[{col: val}, …]` — the default, and the only shape that survives a round trip.
+    #[default]
     Records,
     /// `{col: [val, …]}`
     Columns,
@@ -321,7 +322,26 @@ impl Shape {
             Shape::KeyValue => "key/value",
         }
     }
+
+    /// One-line example of what this shape produces, shown next to the label.
+    pub fn hint(&self) -> &'static str {
+        match self {
+            Shape::Records => "[{col: val}, …]  — round-trips",
+            Shape::Columns => "{col: [val, …]}",
+            Shape::KeyValue => "{a: b} — first column becomes the key",
+        }
+    }
+
+    /// Shapes that make sense for a table of `ncols` columns, best first.
+    pub fn options(ncols: usize) -> Vec<Shape> {
+        let mut v = vec![Shape::Records, Shape::Columns];
+        if ncols == 2 {
+            v.push(Shape::KeyValue);
+        }
+        v
+    }
 }
+
 
 /// Build a document from a table.
 ///

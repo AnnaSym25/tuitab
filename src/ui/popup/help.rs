@@ -95,6 +95,7 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect) {
         Line::from("  zEnter           Dive into the cell's node"),
         Line::from("  m                Cycle records / key-value / scalars"),
         Line::from("  ( / )            Expand / fold a nested column"),
+        Line::from("  zo               Open file as format (directory sheet)"),
         Line::from("  e                Edit scalar (keeps its type)"),
         Line::from("  E                Edit container as text in $EDITOR"),
         Line::from(""),
