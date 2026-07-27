@@ -355,10 +355,11 @@ impl App {
     fn poll_async_load(&mut self) {
         if let Some(ref rx) = self.load_receiver {
             match rx.try_recv() {
-                Ok(LoadEvent::Complete(Ok(dataframe))) => {
+                Ok(LoadEvent::Complete(Ok((dataframe, doc)))) => {
                     let row_count = dataframe.visible_row_count();
                     let s = self.stack.active_mut();
                     s.dataframe = dataframe;
+                    s.doc = doc;
                     s.dataframe.calc_widths(40, 1000);
                     let vis = s.dataframe.visible_row_count();
                     s.scroll_state = ScrollbarState::new(vis.saturating_sub(1));
@@ -2696,6 +2697,13 @@ impl App {
     fn apply_cell_from_editor(&mut self, physical_row: usize, col: usize, new_value: String) {
         let s = self.stack.active_mut();
         s.push_undo();
+
+        if !s.doc_mapping_ok() {
+            s.undo_stack.pop();
+            self.status_message =
+                "The table no longer matches the document — reopen the sheet".to_string();
+            return;
+        }
 
         let mut value = new_value;
         if let Some(doc) = s.doc.as_mut() {

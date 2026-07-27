@@ -231,6 +231,21 @@ impl Sheet {
         }
     }
 
+    /// True when the document's cell→node mapping still describes the table on screen.
+    ///
+    /// The mapping is by index, so anything that adds, removes or reorders columns
+    /// behind the projection's back invalidates it.  Edits check this first: writing to
+    /// a stale mapping would silently modify the wrong node.
+    pub fn doc_mapping_ok(&self) -> bool {
+        match self.doc.as_ref() {
+            None => true,
+            Some(d) => {
+                d.col_roles.len() == self.dataframe.columns.len()
+                    && d.row_paths.len() == self.dataframe.df.height()
+            }
+        }
+    }
+
     /// Reset the view after the table was rebuilt from scratch (a reprojection).  Sort
     /// and search state refer to columns that may no longer exist, so they go too.
     pub fn reset_view_state(&mut self) {

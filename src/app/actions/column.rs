@@ -3,6 +3,23 @@ use crate::types::{Action, AppMode};
 use crate::ui::text_input::TextInput;
 
 impl App {
+    /// Column operations that add, remove or reorder columns cannot run on a sheet
+    /// backed by a document: the table is a projection, so the change would be lost on
+    /// the next reprojection *and* would desync the cell→node mapping in the meantime,
+    /// sending later edits to the wrong node.  Changing the document itself is what `E`
+    /// is for.
+    fn reject_on_doc_sheet(&mut self, what: &str) -> bool {
+        if self.stack.active().doc.is_none() {
+            return false;
+        }
+        self.mode = AppMode::Normal;
+        self.status_message = format!(
+            "{} does not apply to a JSON/YAML/TOML view — press E to edit the document",
+            what
+        );
+        true
+    }
+
     pub(crate) fn handle_column_action(&mut self, action: Action) -> Option<Action> {
         match action {
             // ── Z Prefix (Column Operations) ──────────────────────────────────
@@ -102,10 +119,15 @@ impl App {
                 None
             }
             Action::DeleteColumn => {
-                self.delete_column();
+                if !self.reject_on_doc_sheet("Deleting a column") {
+                    self.delete_column();
+                }
                 None
             }
             Action::StartInsertColumn => {
+                if self.reject_on_doc_sheet("Inserting a column") {
+                    return None;
+                }
                 self.stack.active_mut().insert_column_input.clear();
                 self.mode = AppMode::InsertingColumn;
                 self.status_message = "Insert column: ".to_string();
@@ -165,11 +187,15 @@ impl App {
                 None
             }
             Action::MoveColumnLeft => {
-                self.move_col_left();
+                if !self.reject_on_doc_sheet("Moving a column") {
+                    self.move_col_left();
+                }
                 None
             }
             Action::MoveColumnRight => {
-                self.move_col_right();
+                if !self.reject_on_doc_sheet("Moving a column") {
+                    self.move_col_right();
+                }
                 None
             }
             Action::AdjustColumnWidth => {
@@ -233,6 +259,9 @@ impl App {
 
             // ── Column string operations ──────────────────────────────────────
             Action::StartColReplace => {
+                if self.reject_on_doc_sheet("Find & replace in a column") {
+                    return None;
+                }
                 let s = self.stack.active_mut();
                 s.col_find_input.clear();
                 s.col_replace_input.clear();
@@ -242,6 +271,9 @@ impl App {
                 None
             }
             Action::StartColRegexpReplace => {
+                if self.reject_on_doc_sheet("Find & replace in a column") {
+                    return None;
+                }
                 let s = self.stack.active_mut();
                 s.col_find_input.clear();
                 s.col_replace_input.clear();
@@ -251,6 +283,9 @@ impl App {
                 None
             }
             Action::StartColSplit => {
+                if self.reject_on_doc_sheet("Splitting a column") {
+                    return None;
+                }
                 self.stack.active_mut().col_split_input.clear();
                 self.mode = AppMode::ColSplitting;
                 self.status_message = "Split by delimiter: ".to_string();

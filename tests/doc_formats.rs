@@ -533,3 +533,92 @@ fn undo_after_expanding_keeps_the_table_and_the_node_mapping_in_step() {
     let name_col = s.dataframe.columns.iter().position(|c| c.name == "name").unwrap();
     assert_eq!(s.dataframe.get_physical(0, name_col), "alpha");
 }
+
+/// Regression: column operations reshape the table but not the document, so on a
+/// doc-backed sheet they must be refused rather than desync the cell→node mapping.
+#[test]
+fn column_ops_are_refused_on_a_doc_sheet() {
+    use tuitab::types::Action;
+
+    let mut app = tuitab::app::App::new(&fixture("nested.json"), None).unwrap();
+    let before: Vec<String> = app
+        .stack
+        .active()
+        .dataframe
+        .columns
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+
+    for action in [
+        Action::DeleteColumn,
+        Action::StartInsertColumn,
+        Action::MoveColumnRight,
+        Action::StartColReplace,
+        Action::StartColSplit,
+    ] {
+        app.stack.active_mut().cursor_col = 0;
+        app.handle_action(action);
+        let s = app.stack.active();
+        let now: Vec<String> = s.dataframe.columns.iter().map(|c| c.name.clone()).collect();
+        assert_eq!(now, before, "the table must be left alone");
+        assert!(s.doc_mapping_ok(), "the node mapping must stay valid");
+    }
+
+    // and editing still works afterwards
+    {
+        let s = app.stack.active_mut();
+        s.edit_row = 0;
+        s.edit_col = before.iter().position(|n| n == "name").unwrap();
+        s.edit_input = tuitab::ui::text_input::TextInput::with_value("ALPHA".into());
+    }
+    app.handle_action(Action::ApplyEdit);
+    let s = app.stack.active();
+    assert_eq!(
+        s.doc
+            .as_ref()
+            .unwrap()
+            .doc
+            .read()
+            .unwrap()
+            .root
+            .get(&[Seg::Idx(0), Seg::Key("name".into())]),
+        Some(&tuitab::data::doc::Node::Str("ALPHA".into()))
+    );
+}
+
+/// Regression: a file large enough to take the background loader must still arrive with
+/// its document tree — otherwise saving it flattens the structure.
+#[test]
+fn a_large_json_loaded_in_the_background_keeps_its_document() {
+    use tuitab::data::async_loader::{load_in_background, LoadEvent};
+
+    // just over the 10 MB threshold that switches App::new to the async path
+    let path = out("big.json");
+    let mut text = String::from("[\n");
+    let row = r#"{"id":0,"meta":{"ok":true},"pad":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}"#;
+    let n = (11 * 1024 * 1024) / row.len();
+    for i in 0..n {
+        if i > 0 {
+            text.push_str(",\n");
+        }
+        text.push_str(row);
+    }
+    text.push_str("\n]\n");
+    std::fs::write(&path, &text).unwrap();
+    assert!(std::fs::metadata(&path).unwrap().len() > 10 * 1024 * 1024);
+
+    let rx = load_in_background(path.clone(), None);
+    let LoadEvent::Complete(result) = rx.recv().unwrap();
+    let (df, doc) = result.unwrap();
+    assert_eq!(df.visible_row_count(), n);
+    let doc = doc.expect("the background loader must carry the document tree");
+
+    let out_path = out("big-out.json");
+    save_file_as(&df, Some(&doc), &out_path, Shape::Records, "big").unwrap();
+    let head: String = std::fs::read_to_string(&out_path).unwrap().chars().take(200).collect();
+    assert!(head.contains("\"meta\""), "nesting must survive: {}", head);
+
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&out_path);
+}

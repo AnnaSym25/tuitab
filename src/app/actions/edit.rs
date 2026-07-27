@@ -121,6 +121,17 @@ impl App {
         let row = s.edit_row;
         let col = s.edit_col;
 
+        // Belt and braces: if anything reshaped the table behind the projection's back,
+        // the index-based mapping no longer lines up and writing through it would modify
+        // the wrong node.  Refuse rather than corrupt.
+        if !s.doc_mapping_ok() {
+            s.undo_stack.pop();
+            self.mode = AppMode::Normal;
+            self.status_message =
+                "The table no longer matches the document — reopen the sheet".to_string();
+            return;
+        }
+
         // Doc-backed sheets write into the tree first; the table is only a projection,
         // and the tree decides how the edited value is typed and rendered back.
         if let Some(doc) = s.doc.as_mut() {
@@ -188,6 +199,16 @@ impl App {
         }
         s.push_undo();
         let selected = s.dataframe.selected_rows.clone();
+
+        if !s.doc_mapping_ok() {
+            s.pop_undo();
+            s.redo_stack.pop();
+            s.edit_input.clear();
+            self.mode = AppMode::Normal;
+            self.status_message =
+                "The table no longer matches the document — reopen the sheet".to_string();
+            return;
+        }
 
         // On a doc-backed sheet every selected row is a separate node, so the tree is
         // updated row by row before the table is patched in bulk.
