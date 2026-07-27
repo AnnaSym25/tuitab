@@ -281,8 +281,11 @@ impl App {
             self.status_message = "Go to path needs a JSON/YAML/TOML sheet".to_string();
             return;
         }
+        // The `type` column of a key/value view addresses no node, so fall back to the
+        // row's path rather than opening the prompt empty.
         let here = self
             .cursor_node_path(true)
+            .or_else(|| self.cursor_node_path(false))
             .map(|p| crate::data::doc::path_to_string(&p))
             .unwrap_or_default();
         self.stack.active_mut().path_input = crate::ui::text_input::TextInput::with_value(here);
@@ -304,6 +307,26 @@ impl App {
             return;
         };
         let handle = std::sync::Arc::clone(&doc.doc);
+
+        // The prompt is prefilled with where the cursor already is, so confirming it
+        // unchanged is the common case — and pushing a second sheet of the node already
+        // on screen would grow the stack with duplicates.
+        let target_anchor = {
+            let Ok(guard) = handle.read() else { return };
+            match guard.root.get(&path) {
+                Some(n) if n.is_container() => Some(path.clone()),
+                Some(_) => Some(path[..path.len().saturating_sub(1)].to_vec()),
+                None => None,
+            }
+        };
+        if target_anchor.as_ref() == Some(&doc.view.anchor) {
+            let leaf = path.last().cloned();
+            let s = self.stack.active_mut();
+            place_cursor(s, leaf.as_ref());
+            self.status_message.clear();
+            return;
+        }
+
         self.open_node_path(handle, &path);
     }
 

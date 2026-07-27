@@ -1305,6 +1305,20 @@ fn goto_path_jumps_to_the_node_and_reports_a_wrong_path_usefully() {
         app.status_message
     );
 
+    // going to a node on the sheet you are already on moves the cursor instead of
+    // stacking a duplicate
+    app.handle_action(Action::StartPathGoto);
+    app.stack.active_mut().path_input =
+        tuitab::ui::text_input::TextInput::with_value("servers[0].host".into());
+    app.handle_action(Action::ApplyPathGoto);
+    let depth_before = app.stack.depth();
+    let anchor = app.stack.active().doc.as_ref().unwrap().view.anchor.clone();
+    app.handle_action(Action::StartPathGoto);
+    app.handle_action(Action::ApplyPathGoto); // confirm the prefilled path unchanged
+    assert_eq!(app.stack.depth(), depth_before, "no duplicate sheet");
+    assert_eq!(app.stack.active().doc.as_ref().unwrap().view.anchor, anchor);
+    app.handle_action(Action::PopSheet);
+
     // and a malformed path is refused rather than guessed at
     app.handle_action(Action::StartPathGoto);
     app.stack.active_mut().path_input =
