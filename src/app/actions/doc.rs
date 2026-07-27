@@ -155,8 +155,11 @@ impl App {
                 self.status_message = "Document lock poisoned".to_string();
                 return;
             };
-            let hits = crate::data::doc::search(&guard.root, &re, DOC_SEARCH_LIMIT);
-            let truncated = hits.len() >= DOC_SEARCH_LIMIT;
+            // Collect one extra so "there are exactly 2000" is distinguishable from
+            // "we stopped counting".
+            let mut hits = crate::data::doc::search(&guard.root, &re, DOC_SEARCH_LIMIT + 1);
+            let truncated = hits.len() > DOC_SEARCH_LIMIT;
+            hits.truncate(DOC_SEARCH_LIMIT);
             let rows: Vec<(String, String, String, String)> = hits
                 .iter()
                 .map(|h| {
@@ -189,9 +192,11 @@ impl App {
         let root_name = root_name(&self.stack.active().title);
         let mut sheet = crate::sheet::Sheet::new(format!("{} › /{}", root_name, pattern), df);
         sheet.source_path = self.stack.active().source_path.clone();
+        let revision = handle.read().map(|d| d.revision).unwrap_or_default();
         sheet.doc_hits = Some(crate::sheet::DocHits {
             doc: handle,
             paths: hits.into_iter().map(|h| h.path).collect(),
+            revision,
         });
         self.stack.push(sheet);
         self.status_message = if truncated {
@@ -212,6 +217,13 @@ impl App {
         let Some(path) = hits.paths.get(row).cloned() else {
             return;
         };
+        // Paths are absolute and were captured when the search ran.  A change since then
+        // can renumber them, so a path may still resolve — to a different node.
+        if hits.doc.read().map(|d| d.revision).unwrap_or_default() != hits.revision {
+            self.status_message =
+                "The document changed since this search — run g/ again".to_string();
+            return;
+        }
         let handle = std::sync::Arc::clone(&hits.doc);
         let source = s.source_path.clone();
         let root_name = root_name(&s.title);

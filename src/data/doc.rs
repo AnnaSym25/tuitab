@@ -208,6 +208,10 @@ pub struct Doc {
     /// True when a YAML file held several `---`-separated documents, in which case
     /// `root` is an `Arr` of them and saving back to YAML re-emits the separators.
     pub multi_doc: bool,
+    /// Bumped on every change to `root`.  Anything holding paths captured earlier — a
+    /// search hit list, say — compares this to know whether they still mean what they
+    /// meant: deleting one array element silently renumbers every later index.
+    pub revision: u64,
 }
 
 impl Doc {
@@ -216,6 +220,11 @@ impl Doc {
         let mut doc = Doc::from_str(&text, format)?;
         doc.path = Some(path.to_path_buf());
         Ok(doc)
+    }
+
+    /// Record that `root` changed.  Call after every mutation.
+    pub fn bump(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// True when this document can be written back through its own source text, keeping
@@ -237,6 +246,7 @@ impl Doc {
             path: None,
             source_text: Some(text.to_string()),
             multi_doc,
+            revision: 0,
         })
     }
 
@@ -1001,6 +1011,7 @@ mod tests {
             path: None,
             source_text: None,
             multi_doc: false,
+            revision: 0,
         };
         let out = doc.to_string_as(Format::Toml, &SaveOpts::default()).unwrap();
         assert!(out.contains("keep"), "{}", out);
@@ -1012,6 +1023,7 @@ mod tests {
             path: None,
             source_text: None,
             multi_doc: false,
+            revision: 0,
         };
         assert!(arr.to_string_as(Format::Toml, &SaveOpts::default()).is_err());
     }
@@ -1164,6 +1176,7 @@ host = \"b\"
             path: None,
             source_text: None,
             multi_doc: false,
+            revision: 0,
         };
         assert_eq!(
             doc.to_string_as(Format::Toml, &SaveOpts::default())

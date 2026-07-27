@@ -27,6 +27,9 @@ use tempfile::TempDir;
 pub struct DocHits {
     pub doc: std::sync::Arc<std::sync::RwLock<crate::data::doc::Doc>>,
     pub paths: Vec<crate::data::doc::NodePath>,
+    /// Document revision when the search ran.  Paths are absolute, so any later change
+    /// can renumber them — a stale list must refuse rather than open the wrong node.
+    pub revision: u64,
 }
 
 /// One undo entry: the table, plus the document root when the sheet is doc-backed.
@@ -201,6 +204,7 @@ impl Sheet {
         if let (Some(doc), Some(root)) = (self.doc.as_mut(), state.root) {
             if let Ok(mut guard) = doc.doc.write() {
                 guard.root = root;
+                guard.bump();
             }
             if let Ok(df) = doc.reproject() {
                 self.dataframe = df;

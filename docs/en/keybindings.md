@@ -177,10 +177,14 @@ all still defaults to CSV, and is only re-read as JSON when it starts with `[` o
 `/` searches what is on screen, which on a document sheet is one subtree rendered into
 cells — it cannot see a key three levels down. `g/` searches the tree itself and pushes a
 sheet of hits: one row per match, with its path, the value there, and whether the pattern
-matched the key or the value. `Enter` on a hit opens the node — a container as itself, a
+matched the key or the value. The paths are absolute from the document root, so `g/`
+means the same thing whether you run it at the top or three levels in. `Enter` on a hit
+opens the node — a container as itself, a
 scalar's parent so the value is seen in context — with the cursor on the match. Nothing
 is opened automatically. The pattern is a case-insensitive regex, and the list stops at
-2000 hits, which the status line says.
+2000 hits, which the status line says. A hit list is a snapshot: if the document changes
+after the search, opening a hit is refused rather than risking a path that now points
+somewhere else — run `g/` again.
 
 When there is nothing more urgent to report, the status line shows the document path of
 the cell under the cursor — `servers[1].host` — which is what you need to refer to a

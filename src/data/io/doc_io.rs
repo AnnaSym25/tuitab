@@ -146,6 +146,7 @@ impl DocState {
             for path in &paths {
                 guard.root.remove(path)?;
             }
+            guard.bump();
         }
         self.reproject()
     }
@@ -214,7 +215,11 @@ impl DocState {
         let mut guard = self.doc.write().map_err(|_| eyre!("document lock poisoned"))?;
 
         if role == ColRole::Key {
-            return rename_key(&mut guard.root, &path, text).map(|_| text.to_string());
+            let out = rename_key(&mut guard.root, &path, text).map(|_| text.to_string());
+            if out.is_ok() {
+                guard.bump();
+            }
+            return out;
         }
 
         let old = guard.root.get(&path).cloned();
@@ -224,6 +229,7 @@ impl DocState {
         let new = Node::parse_scalar(text, old.as_ref());
         let shown = new.to_cell_string();
         guard.root.set(&path, new)?;
+        guard.bump();
         Ok(shown)
     }
 
@@ -252,7 +258,9 @@ impl DocState {
         };
         let parsed = Doc::from_str(text, fmt)?.root;
         let mut guard = self.doc.write().map_err(|_| eyre!("document lock poisoned"))?;
-        guard.root.set(path, parsed)
+        guard.root.set(path, parsed)?;
+        guard.bump();
+        Ok(())
     }
 
     pub fn format(&self) -> Format {
@@ -289,6 +297,7 @@ impl DocState {
                 ),
                 path: None,
                 multi_doc: false,
+                revision: 0,
             };
             return wrapped.save_as(path, format, opts);
         }
@@ -323,6 +332,11 @@ impl DocState {
                 lost.join(" or ")
             ))
         }
+    }
+
+    /// Current revision of the shared document.
+    pub fn revision(&self) -> u64 {
+        self.doc.read().map(|d| d.revision).unwrap_or_default()
     }
 
     /// Breadcrumb trail shown in the sheet title: `config.toml › servers › [1]`.
@@ -500,6 +514,7 @@ pub fn table_to_doc(
         path: None,
         source_text: None,
         multi_doc: false,
+        revision: 0,
     })
 }
 

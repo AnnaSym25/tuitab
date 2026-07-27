@@ -1170,3 +1170,80 @@ fn document_search_with_no_match_pushes_nothing() {
     assert_eq!(app.stack.depth(), depth, "no sheet for no results");
     assert!(app.status_message.contains("No match"), "{}", app.status_message);
 }
+
+/// A hit list is a snapshot of paths. If the document changes underneath it, those paths
+/// can silently resolve to *different* nodes — deleting an early array element shifts
+/// every later index. Navigating there without a word would be worse than refusing.
+#[test]
+fn a_hit_list_does_not_navigate_after_the_document_changed() {
+    use tuitab::types::Action;
+
+    let path = out("stale-hits.json");
+    std::fs::write(
+        &path,
+        r#"[{"tag":"keep"},{"tag":"keep"},{"tag":"needle"}]"#,
+    )
+    .unwrap();
+    let mut app = tuitab::app::App::new(&path, None).unwrap();
+
+    app.handle_action(Action::StartDocSearch);
+    for c in "needle".chars() {
+        app.handle_action(Action::SearchInput(c));
+    }
+    app.handle_action(Action::ApplyDocSearch);
+    assert_eq!(app.stack.active().dataframe.visible_row_count(), 1);
+    assert_eq!(app.stack.active().dataframe.get_physical(0, 0), "[2].tag");
+
+    // go back and delete the first element, shifting [2] down to [1]
+    app.handle_action(Action::PopSheet);
+    app.stack.active_mut().dataframe.selected_rows.insert(0);
+    app.handle_action(Action::DeleteSelectedRows);
+
+    // a fresh search is of course right
+    app.handle_action(Action::StartDocSearch);
+    for c in "needle".chars() {
+        app.handle_action(Action::SearchInput(c));
+    }
+    app.handle_action(Action::ApplyDocSearch);
+    assert_eq!(app.stack.active().dataframe.get_physical(0, 0), "[1].tag");
+}
+
+/// The dangerous shape: a stale path that still resolves, but to a different node.
+/// Deleting an early array element renumbers every later index, so a recorded path
+/// would open something the user never searched for.
+#[test]
+fn a_stale_hit_refuses_rather_than_opening_the_wrong_node() {
+    use tuitab::types::Action;
+
+    let path = out("stale-hits-2.json");
+    std::fs::write(&path, r#"[{"tag":"a"},{"tag":"b"},{"tag":"needle"},{"tag":"d"}]"#).unwrap();
+    let mut app = tuitab::app::App::new(&path, None).unwrap();
+
+    app.handle_action(Action::StartDocSearch);
+    for c in "needle".chars() {
+        app.handle_action(Action::SearchInput(c));
+    }
+    app.handle_action(Action::ApplyDocSearch);
+    assert_eq!(app.stack.active().dataframe.get_physical(0, 0), "[2].tag");
+
+    // change the document underneath the hit list, the way a dive-and-delete would
+    {
+        let hits = app.stack.active().doc_hits.as_ref().unwrap();
+        let mut guard = hits.doc.write().unwrap();
+        guard.root.remove(&[Seg::Idx(0)]).unwrap();
+        guard.bump();
+    }
+
+    // `[2].tag` still resolves — to what used to be `[3]`, which never matched
+    app.handle_action(Action::OpenRow);
+    assert!(
+        app.status_message.contains("changed"),
+        "a stale hit must refuse: {}",
+        app.status_message
+    );
+    assert!(
+        app.stack.active().doc_hits.is_some(),
+        "and stay on the hit list rather than navigating"
+    );
+}
+
