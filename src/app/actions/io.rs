@@ -73,7 +73,13 @@ impl App {
                     self.save.shapes = crate::data::io::doc_io::Shape::options(
                         self.stack.active().dataframe.col_count(),
                     );
-                    self.save.shape_index = self.save.shape_index.min(self.save.shapes.len() - 1);
+                    // Restore the cursor onto the remembered shape, not its old position.
+                    self.save.shape_index = self
+                        .save
+                        .shapes
+                        .iter()
+                        .position(|s| *s == self.save.shape)
+                        .unwrap_or(0);
                     self.mode = AppMode::SaveShapeSelect;
                     return None;
                 }
@@ -120,6 +126,9 @@ impl App {
                 None
             }
             Action::ApplySaveShape => {
+                if let Some(s) = self.save.shapes.get(self.save.shape_index) {
+                    self.save.shape = *s;
+                }
                 // Returning Some() here would only pass the action further down the
                 // handler chain, not run it — the save has to be re-entered directly.
                 self.mode = AppMode::Saving;
@@ -133,6 +142,7 @@ impl App {
             Action::OpenAs => {
                 if self.stack.active().is_dir_sheet {
                     self.save.shape_index = 0;
+                    self.save.shapes.clear();
                     self.mode = AppMode::OpenAsSelect;
                 } else {
                     self.mode = AppMode::Normal;
@@ -172,11 +182,7 @@ impl App {
     }
 
     fn chosen_shape(&self) -> crate::data::io::doc_io::Shape {
-        self.save
-            .shapes
-            .get(self.save.shape_index)
-            .copied()
-            .unwrap_or_default()
+        self.save.shape
     }
 
     pub(super) fn saving_autocomplete(&mut self) {

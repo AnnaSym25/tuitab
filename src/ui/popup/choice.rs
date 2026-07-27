@@ -18,8 +18,7 @@ pub fn render_choice_popup(
     index: usize,
     area: Rect,
 ) {
-    let height = ((items.len() as u16 + 2) * 100 / area.height.max(1)).clamp(20, 60);
-    let popup_area = centered_rect(60, height, area);
+    let popup_area = centered_rect(60, 30, area);
     frame.render_widget(Clear, popup_area);
 
     let width = items.iter().map(|(l, _)| l.chars().count()).max().unwrap_or(0);

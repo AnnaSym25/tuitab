@@ -700,7 +700,7 @@ fn saving_a_plain_table_asks_for_a_shape() {
     assert!(json.trim_start().starts_with('{'), "column shape: {}", json);
     assert!(json.contains("["), "each column is an array: {}", json);
 
-    // saving again reuses the remembered answer instead of asking twice
+    // saving again lands on the remembered shape
     let second = out("shape-choice-2.json");
     app.handle_action(Action::SaveFile);
     app.save.input = tuitab::ui::text_input::TextInput::with_value(
@@ -711,6 +711,48 @@ fn saving_a_plain_table_asks_for_a_shape() {
     app.handle_action(Action::ApplySaveShape);
     let again = std::fs::read_to_string(&second).unwrap();
     assert!(again.trim_start().starts_with('{'), "same shape: {}", again);
+}
+
+/// The remembered choice is a shape, not a position in the list: a sheet with a
+/// different column count offers a different list, and an index would land elsewhere.
+#[test]
+fn the_remembered_shape_survives_a_shorter_option_list() {
+    use tuitab::data::io::doc_io::Shape;
+    use tuitab::types::{Action, AppMode};
+
+    // a two-column table: key/value is offered as the third option
+    let two_col = out("pairs.csv");
+    std::fs::write(&two_col, "k,v\na,1\nb,2\n").unwrap();
+    let mut app = tuitab::app::App::new(&two_col, None).unwrap();
+    let target = out("kv-shape.json");
+    let _ = std::fs::remove_file(&target);
+    app.handle_action(Action::SaveFile);
+    app.save.input =
+        tuitab::ui::text_input::TextInput::with_value(target.to_string_lossy().into_owned());
+    app.handle_action(Action::ApplySave);
+    assert_eq!(app.save.shapes.len(), 3, "records, columns, key/value");
+    app.handle_action(Action::ChoiceDown);
+    app.handle_action(Action::ChoiceDown);
+    app.handle_action(Action::ApplySaveShape);
+    assert_eq!(app.save.shape, Shape::KeyValue);
+
+    // now a sheet with more columns: key/value is not on offer, and the cursor must not
+    // silently land on `columns` just because index 2 no longer exists
+    app.handle_action(Action::PopSheet);
+    let mut app = tuitab::app::App::new(&fixture("sample.csv"), None).unwrap();
+    app.save.shape = Shape::KeyValue;
+    app.handle_action(Action::SaveFile);
+    let wide = out("wide-shape.json");
+    app.save.input =
+        tuitab::ui::text_input::TextInput::with_value(wide.to_string_lossy().into_owned());
+    app.handle_action(Action::ApplySave);
+    assert_eq!(app.mode, AppMode::SaveShapeSelect);
+    assert_eq!(app.save.shapes.len(), 2, "key/value needs exactly 2 columns");
+    assert_eq!(app.save.shape_index, 0, "falls back to the first option");
+    app.handle_action(Action::ApplySaveShape);
+    assert_eq!(app.save.shape, Shape::Records);
+    let json = std::fs::read_to_string(&wide).unwrap();
+    assert!(json.trim_start().starts_with('['), "records: {}", json);
 }
 
 /// A doc-backed sheet is never asked for a shape — its tree already has one.

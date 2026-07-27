@@ -26,7 +26,7 @@ impl App {
             Action::EnterZPrefix => {
                 self.mode = AppMode::ZPrefix;
                 self.status_message =
-                    "z: (e)dit name  (d)elete  (i)nsert  (r)eplace  (g)regexp  (x)split  (s)elect  (u)nselect  (<-/->) move"
+                    "z: (e)dit name  (d)elete  (i)nsert  (r)eplace  (g)regexp  (x)split  (s)elect  (u)nselect  (o)pen as  (<-/->) move"
                         .to_string();
                 None
             }
