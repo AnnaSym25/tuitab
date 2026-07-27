@@ -233,6 +233,7 @@ impl DocState {
         if format == Format::Toml && !matches!(guard.root, Node::Obj(_)) {
             let wrapped = Doc {
                 format,
+                source_text: None,
                 root: Node::Obj(
                     [(toml_table_name(name), guard.root.clone())]
                         .into_iter()
@@ -419,6 +420,7 @@ pub fn table_to_doc(
         format,
         root,
         path: None,
+        source_text: None,
         multi_doc: false,
     })
 }

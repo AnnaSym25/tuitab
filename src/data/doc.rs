@@ -10,7 +10,8 @@
 //! - datetimes are carried as RFC-3339 text so TOML round-trips exactly; converting to
 //!   JSON emits a string, because JSON has no date type;
 //! - YAML anchors, tags and merge keys are resolved at load time and not restored;
-//! - comments and original formatting are never preserved.
+//! - YAML comments and formatting are lost; no Rust YAML library round-trips them.
+//!   TOML keeps its comments when a TOML file is saved back as TOML (see [`retoml`]).
 
 use color_eyre::{eyre::eyre, Result};
 use indexmap::IndexMap;
@@ -142,6 +143,10 @@ pub struct Doc {
     pub format: Format,
     pub root: Node,
     pub path: Option<std::path::PathBuf>,
+    /// The text this document was parsed from, kept so a TOML file can be written back
+    /// through its own source and keep its comments.  `None` for documents built from a
+    /// table rather than read from a file.
+    pub source_text: Option<String>,
     /// True when a YAML file held several `---`-separated documents, in which case
     /// `root` is an `Arr` of them and saving back to YAML re-emits the separators.
     pub multi_doc: bool,
@@ -155,6 +160,12 @@ impl Doc {
         Ok(doc)
     }
 
+    /// True when this document can be written back through its own source text, keeping
+    /// comments and layout.  Only same-format TOML saves qualify.
+    pub fn can_keep_comments(&self, target: Format) -> bool {
+        target == Format::Toml && self.format == Format::Toml && self.source_text.is_some()
+    }
+
     pub fn from_str(text: &str, format: Format) -> Result<Doc> {
         let (root, multi_doc) = match format {
             Format::Json => (parse_json(text)?, false),
@@ -166,12 +177,26 @@ impl Doc {
             format,
             root,
             path: None,
+            source_text: Some(text.to_string()),
             multi_doc,
         })
     }
 
     /// Serialise the whole tree into `format`.
+    ///
+    /// A TOML document written back as TOML goes through its own source text so
+    /// comments and layout survive — losing a config file's comments because one value
+    /// was edited is not an acceptable trade.
     pub fn to_string_as(&self, format: Format, opts: &SaveOpts) -> Result<String> {
+        if self.can_keep_comments(format) && !opts.sort_keys {
+            if let Some(src) = self.source_text.as_deref() {
+                if let Ok(text) = retoml(src, &self.root) {
+                    return Ok(text);
+                }
+                // A source that no longer parses (edited on disk under us) is not worth
+                // failing the save over; fall through to a clean re-serialisation.
+            }
+        }
         serialize(&self.root, format, self.multi_doc, opts)
     }
 
@@ -372,6 +397,189 @@ fn fmt_float(f: f64) -> String {
         format!("{:.1}", f)
     } else {
         f.to_string()
+    }
+}
+
+
+// ── writing TOML back through its own source ─────────────────────────────────
+
+/// Re-emit `src` with the values from `root` applied to it, keeping every comment and
+/// every scrap of layout that still has somewhere to live.
+///
+/// Keys that survived keep their decoration; keys the user removed go, keys they added
+/// are appended.  Arrays and tables whose length changed are rebuilt, which loses any
+/// comment *inside* them — rare enough to accept, and far better than dropping the
+/// comments of the whole file because one value moved.
+pub fn retoml(src: &str, root: &Node) -> Result<String> {
+    let mut doc: toml_edit::DocumentMut = src
+        .parse()
+        .map_err(|e| eyre!("source is no longer valid TOML: {}", e))?;
+    let Node::Obj(map) = root else {
+        return Err(eyre!("TOML requires a table at the top level"));
+    };
+    apply_table(map, doc.as_table_mut());
+    reorder_table(doc.as_table_mut(), map);
+    Ok(doc.to_string())
+}
+
+fn apply_table(map: &IndexMap<String, Node>, tbl: &mut dyn toml_edit::TableLike) {
+    let existing: Vec<String> = tbl.iter().map(|(k, _)| k.to_string()).collect();
+    for k in existing {
+        if !map.contains_key(&k) {
+            tbl.remove(&k);
+        }
+    }
+    for (k, node) in map {
+        match tbl.get_mut(k) {
+            Some(item) => apply_item(node, item),
+            None => {
+                tbl.insert(k, node_to_item(node));
+            }
+        }
+    }
+}
+
+/// Put a table back into the tree's key order.
+///
+/// Needed because a newly inserted key lands at the end, and a rename looks like a
+/// removal plus an insertion — without this, renaming a key would move its line to the
+/// bottom of the file.  `TableLike` only offers alphabetical sorting, hence the two
+/// concrete call sites.
+fn key_order(map: &IndexMap<String, Node>) -> std::collections::HashMap<&str, usize> {
+    map.keys()
+        .enumerate()
+        .map(|(i, k)| (k.as_str(), i))
+        .collect()
+}
+
+fn reorder_table(tbl: &mut toml_edit::Table, map: &IndexMap<String, Node>) {
+    let order = key_order(map);
+    tbl.sort_values_by(|k1, _, k2, _| order.get(k1.get()).cmp(&order.get(k2.get())));
+}
+
+fn reorder_inline(tbl: &mut toml_edit::InlineTable, map: &IndexMap<String, Node>) {
+    let order = key_order(map);
+    tbl.sort_values_by(|k1, _, k2, _| order.get(k1.get()).cmp(&order.get(k2.get())));
+}
+
+fn apply_item(node: &Node, item: &mut toml_edit::Item) {
+    match node {
+        Node::Obj(map) => {
+            if let Some(tbl) = item.as_table_mut() {
+                apply_table(map, tbl);
+                reorder_table(tbl, map);
+                return;
+            }
+            if let Some(tbl) = item.as_inline_table_mut() {
+                apply_table(map, tbl);
+                reorder_inline(tbl, map);
+                return;
+            }
+        }
+        Node::Arr(items) => {
+            if let toml_edit::Item::ArrayOfTables(aot) = item {
+                // Only reusable while it is still an array of the same number of
+                // tables; anything else is rebuilt below.
+                if aot.len() == items.len() && items.iter().all(|n| matches!(n, Node::Obj(_))) {
+                    for (t, n) in aot.iter_mut().zip(items) {
+                        if let Node::Obj(map) = n {
+                            apply_table(map, t);
+                            reorder_table(t, map);
+                        }
+                    }
+                    return;
+                }
+            }
+            if let Some(arr) = item.as_array_mut() {
+                if arr.len() == items.len() {
+                    for (v, n) in arr.iter_mut().zip(items) {
+                        apply_value(n, v);
+                    }
+                    return;
+                }
+            }
+        }
+        _ => {
+            if let toml_edit::Item::Value(v) = item {
+                apply_value(node, v);
+                return;
+            }
+        }
+    }
+    *item = node_to_item(node);
+}
+
+/// Replace a value, carrying its decoration across so the whitespace and any trailing
+/// `# comment` on that line stay put.
+fn apply_value(node: &Node, slot: &mut toml_edit::Value) {
+    match node {
+        Node::Obj(map) => {
+            if let Some(tbl) = slot.as_inline_table_mut() {
+                apply_table(map, tbl);
+                reorder_inline(tbl, map);
+                return;
+            }
+        }
+        Node::Arr(items) => {
+            if let Some(arr) = slot.as_array_mut() {
+                if arr.len() == items.len() {
+                    for (v, n) in arr.iter_mut().zip(items) {
+                        apply_value(n, v);
+                    }
+                    return;
+                }
+            }
+        }
+        _ => {}
+    }
+    let decor = slot.decor().clone();
+    let mut fresh = node_to_toml_value(node);
+    *fresh.decor_mut() = decor;
+    *slot = fresh;
+}
+
+fn node_to_item(node: &Node) -> toml_edit::Item {
+    match node {
+        Node::Obj(map) => {
+            let mut t = toml_edit::Table::new();
+            for (k, v) in map {
+                t.insert(k, node_to_item(v));
+            }
+            toml_edit::Item::Table(t)
+        }
+        Node::Null => toml_edit::Item::None,
+        other => toml_edit::Item::Value(node_to_toml_value(other)),
+    }
+}
+
+fn node_to_toml_value(node: &Node) -> toml_edit::Value {
+    use toml_edit::Value as V;
+    match node {
+        // TOML has no null; callers drop the key, so this is only reached for a null
+        // nested inside an array, where an empty string is the least-bad stand-in.
+        Node::Null => V::from(""),
+        Node::Bool(b) => V::from(*b),
+        Node::Int(i) => V::from(*i),
+        Node::Float(f) => V::from(*f),
+        Node::Str(s) => V::from(s.as_str()),
+        Node::DateTime(s) => match s.parse::<toml_edit::Datetime>() {
+            Ok(d) => V::from(d),
+            Err(_) => V::from(s.as_str()),
+        },
+        Node::Arr(items) => {
+            let mut a = toml_edit::Array::new();
+            for i in items {
+                a.push(node_to_toml_value(i));
+            }
+            V::Array(a)
+        }
+        Node::Obj(map) => {
+            let mut t = toml_edit::InlineTable::new();
+            for (k, v) in map {
+                t.insert(k, node_to_toml_value(v));
+            }
+            V::InlineTable(t)
+        }
     }
 }
 
@@ -689,6 +897,7 @@ mod tests {
             format: Format::Toml,
             root,
             path: None,
+            source_text: None,
             multi_doc: false,
         };
         let out = doc.to_string_as(Format::Toml, &SaveOpts::default()).unwrap();
@@ -699,6 +908,7 @@ mod tests {
             format: Format::Toml,
             root: Node::Arr(vec![Node::Int(1)]),
             path: None,
+            source_text: None,
             multi_doc: false,
         };
         assert!(arr.to_string_as(Format::Toml, &SaveOpts::default()).is_err());
@@ -771,5 +981,123 @@ mod tests {
         assert_eq!(sniff("name: x\n", true), None);
         assert_eq!(sniff("name = \"x\"\n", true), None);
         assert_eq!(sniff("[1, 2]", true), Some(Format::Json));
+    }
+
+    #[test]
+    fn editing_a_toml_value_keeps_every_comment() {
+        let src = "\
+# top of file
+name = \"demo\"   # what it is called
+port = 8080
+
+# the database section
+[db]
+host = \"localhost\"
+pool = 10
+";
+        let mut doc = Doc::from_str(src, Format::Toml).unwrap();
+        doc.root
+            .set(&[Seg::Key("port".into())], Node::Int(9090))
+            .unwrap();
+        doc.root
+            .set(
+                &[Seg::Key("db".into()), Seg::Key("host".into())],
+                Node::Str("db.internal".into()),
+            )
+            .unwrap();
+
+        let out = doc.to_string_as(Format::Toml, &SaveOpts::default()).unwrap();
+        assert!(out.contains("# top of file"), "{}", out);
+        assert!(out.contains("# the database section"), "{}", out);
+        assert!(out.contains("# what it is called"), "trailing comment: {}", out);
+        assert!(out.contains("port = 9090"), "{}", out);
+        assert!(out.contains("host = \"db.internal\""), "{}", out);
+        assert!(out.contains("pool = 10"), "untouched keys stay: {}", out);
+    }
+
+    #[test]
+    fn removing_and_adding_keys_is_reflected_without_losing_the_rest() {
+        let src = "# keep me\na = 1\nb = 2\n";
+        let mut doc = Doc::from_str(src, Format::Toml).unwrap();
+        let Node::Obj(map) = &mut doc.root else { unreachable!() };
+        map.shift_remove("b");
+        map.insert("c".into(), Node::Str("new".into()));
+
+        let out = doc.to_string_as(Format::Toml, &SaveOpts::default()).unwrap();
+        assert!(out.contains("# keep me"), "{}", out);
+        assert!(out.contains("a = 1"), "{}", out);
+        assert!(!out.contains("b = 2"), "removed key is gone: {}", out);
+        assert!(out.contains("c = \"new\""), "added key is there: {}", out);
+    }
+
+    #[test]
+    fn arrays_of_tables_keep_their_comments_when_the_length_holds() {
+        let src = "\
+# servers follow
+[[server]]
+host = \"a\"  # the first one
+
+[[server]]
+host = \"b\"
+";
+        let mut doc = Doc::from_str(src, Format::Toml).unwrap();
+        doc.root
+            .set(
+                &[Seg::Key("server".into()), Seg::Idx(1), Seg::Key("host".into())],
+                Node::Str("bb".into()),
+            )
+            .unwrap();
+        let out = doc.to_string_as(Format::Toml, &SaveOpts::default()).unwrap();
+        assert!(out.contains("# servers follow"), "{}", out);
+        assert!(out.contains("# the first one"), "{}", out);
+        assert!(out.contains("host = \"bb\""), "{}", out);
+    }
+
+    #[test]
+    fn a_document_built_from_scratch_still_serialises_normally() {
+        // no source text to write back through
+        let doc = Doc {
+            format: Format::Toml,
+            root: Node::Obj([("a".to_string(), Node::Int(1))].into_iter().collect()),
+            path: None,
+            source_text: None,
+            multi_doc: false,
+        };
+        assert_eq!(
+            doc.to_string_as(Format::Toml, &SaveOpts::default())
+                .unwrap()
+                .trim(),
+            "a = 1"
+        );
+    }
+
+    #[test]
+    fn converting_to_another_format_does_not_go_through_the_toml_source() {
+        let doc = Doc::from_str("# c\na = 1\n", Format::Toml).unwrap();
+        let out = doc.to_string_as(Format::Json, &SaveOpts::default()).unwrap();
+        assert!(!out.contains("# c"), "JSON has no comments: {}", out);
+        assert!(out.contains("\"a\""), "{}", out);
+    }
+
+    #[test]
+    fn a_renamed_key_stays_on_its_own_line_and_the_rest_keeps_its_comments() {
+        let src = "# header\na = 1\nb = 2  # about b\nc = 3\n";
+        let mut doc = Doc::from_str(src, Format::Toml).unwrap();
+        let Node::Obj(map) = &mut doc.root else { unreachable!() };
+        let idx = map.get_index_of("b").unwrap();
+        let (_, v) = map.shift_remove_index(idx).unwrap();
+        map.shift_insert(idx, "bb".into(), v);
+
+        let out = doc.to_string_as(Format::Toml, &SaveOpts::default()).unwrap();
+        let keys: Vec<&str> = out
+            .lines()
+            .filter(|l| l.contains('='))
+            .filter_map(|l| l.split(" =").next())
+            .collect();
+        assert_eq!(keys, vec!["a", "bb", "c"], "order holds: {}", out);
+        assert!(out.contains("# header"), "{}", out);
+        // Known limit: a rename is a removal plus an insertion as far as the source is
+        // concerned, so the comment that sat on that key's line goes with it.
+        assert!(!out.contains("# about b"), "documented loss: {}", out);
     }
 }

@@ -59,6 +59,7 @@ rand = "0.10"
 toml = { version = "1.1.3", features = ["preserve_order"] }
 serde_yaml_ng = "0.10.0"
 indexmap = "2.14.0"
+toml_edit = "0.25.13"
 
 [package.metadata.docs.rs]
 # Build only for Linux x86_64. The default features bundle DuckDB and SQLite

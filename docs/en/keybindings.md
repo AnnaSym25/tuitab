@@ -179,7 +179,13 @@ the real nesting rather than flattened `parent.key` names. Expanded cells stay e
 and write to the node they actually address.
 
 Saving re-serialises the document, so nesting, key order and TOML datetimes survive.
-Comments and original formatting do not — they are not part of the parsed document.
+
+A TOML file saved back as TOML keeps its comments and layout: it is written through its
+own source rather than rebuilt, so editing one value in a config leaves the rest of the
+file byte-for-byte alone. Two things still go: the comment on a key you *rename* (a
+rename is a removal plus an insertion as far as the file is concerned), and comments
+inside an array or table whose length changed. Converting to another format drops
+comments entirely — YAML and JSON have nowhere to put them.
 
 ## Keyboard layouts
 

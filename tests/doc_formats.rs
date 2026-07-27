@@ -801,3 +801,55 @@ fn open_as_forces_a_format_from_the_directory_listing() {
 
     let _ = std::fs::remove_file(fixture("mislabelled.txt"));
 }
+
+/// End to end: edit a config in the app, save over it, and the comments are still there.
+/// Losing a config file's comments because one value changed is the kind of damage the
+/// user cannot undo from inside the tool.
+#[test]
+fn saving_an_edited_toml_config_over_itself_keeps_its_comments() {
+    use tuitab::types::Action;
+
+    let path = out("commented.toml");
+    std::fs::write(
+        &path,
+        "# tuitab demo config\nname = \"demo\"  # display name\nport = 8080\n\n# database\n[db]\nhost = \"localhost\"\n",
+    )
+    .unwrap();
+
+    let mut app = tuitab::app::App::new(&path, None).unwrap();
+    let row = (0..app.stack.active().dataframe.visible_row_count())
+        .find(|r| app.stack.active().dataframe.get_physical(*r, 0) == "port")
+        .unwrap();
+    {
+        let s = app.stack.active_mut();
+        s.edit_row = row;
+        s.edit_col = 1;
+        s.edit_input = tuitab::ui::text_input::TextInput::with_value("9090".into());
+    }
+    app.handle_action(Action::ApplyEdit);
+
+    app.handle_action(Action::SaveFile);
+    app.save.input =
+        tuitab::ui::text_input::TextInput::with_value(path.to_string_lossy().into_owned());
+    app.handle_action(Action::ApplySave);
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("port = 9090"), "the edit landed: {}", text);
+    assert!(text.contains("# tuitab demo config"), "{}", text);
+    assert!(text.contains("# display name"), "{}", text);
+    assert!(text.contains("# database"), "{}", text);
+}
+
+/// Converting away from TOML drops the comments, because the target has nowhere to put
+/// them — the guarantee is TOML → TOML only.
+#[test]
+fn converting_a_commented_toml_to_yaml_drops_the_comments() {
+    let path = out("commented-src.toml");
+    std::fs::write(&path, "# a comment\nname = \"demo\"\n").unwrap();
+    let (df, doc) = load_file_with_doc(&path, None).unwrap();
+    let target = out("commented-out.yaml");
+    save_file_as(&df, doc.as_ref(), &target, Shape::Records, "x").unwrap();
+    let text = std::fs::read_to_string(&target).unwrap();
+    assert!(!text.contains("# a comment"), "{}", text);
+    assert!(text.contains("name: demo"), "{}", text);
+}
