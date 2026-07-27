@@ -1020,3 +1020,58 @@ fn the_node_path_is_shown_in_the_status_line_when_idle() {
     app.handle_action(Action::CycleViewMode);
     assert!(!app.status_message.is_empty());
 }
+
+/// Deleting from a sorted view must leave the table and its own sort state agreeing:
+/// the reprojection rebuilds rows in the tree's order, so a stale sort marker would
+/// claim an ordering the table no longer has.
+#[test]
+fn deleting_rows_from_a_sorted_view_leaves_no_stale_sort() {
+    use tuitab::types::Action;
+
+    let path = out("sorted-delete.json");
+    std::fs::write(&path, r#"[{"n":3},{"n":1},{"n":2}]"#).unwrap();
+    let mut app = tuitab::app::App::new(&path, None).unwrap();
+
+    app.stack.active_mut().cursor_col = 0;
+    app.handle_action(Action::SortAscending);
+    assert_eq!(app.stack.active().dataframe.get_physical(
+        app.stack.active().dataframe.row_order[0], 0), "1");
+
+    // delete the physical row holding 1, so the tree order (3, 2) no longer matches
+    // what an ascending sort would produce (2, 3)
+    app.stack.active_mut().dataframe.selected_rows.insert(1);
+    app.handle_action(Action::DeleteSelectedRows);
+
+    let s = app.stack.active();
+    assert_eq!(s.dataframe.visible_row_count(), 2);
+    let shown: Vec<String> = (0..2)
+        .map(|d| s.dataframe.get_physical(s.dataframe.row_order[d], 0))
+        .collect();
+    assert!(
+        s.sort_col.is_none(),
+        "a sort marker that no longer describes the rows ({:?}) is worse than none",
+        shown
+    );
+}
+
+/// Deleting an element from a scalar array view.
+#[test]
+fn deleting_from_a_scalar_view_removes_the_element() {
+    use tuitab::types::Action;
+
+    let path = out("scalar-delete.json");
+    std::fs::write(&path, "[10, 20, 30]").unwrap();
+    let mut app = tuitab::app::App::new(&path, None).unwrap();
+    assert_eq!(app.stack.active().dataframe.visible_row_count(), 3);
+
+    app.stack.active_mut().dataframe.selected_rows.insert(1);
+    app.handle_action(Action::DeleteSelectedRows);
+
+    let sheet = app.stack.active();
+    assert_eq!(sheet.dataframe.visible_row_count(), 2, "{}", app.status_message);
+    let target = out("scalar-delete-out.json");
+    save_file_as(&sheet.dataframe, sheet.doc.as_ref(), &target, Shape::Records, "x").unwrap();
+    let text = std::fs::read_to_string(&target).unwrap();
+    assert!(!text.contains("20"), "{}", text);
+    assert!(text.contains("10") && text.contains("30"), "{}", text);
+}

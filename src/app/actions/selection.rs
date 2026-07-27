@@ -248,6 +248,10 @@ impl App {
                     s.dataframe = df;
                     s.dataframe.selected_rows.clear();
                     s.dataframe.modified = true;
+                    // The frame is rebuilt in the tree's order, so a sort marker left
+                    // over from before would claim an ordering the rows no longer have.
+                    s.sort_col = None;
+                    s.sort_desc = false;
                     let vis = s.dataframe.visible_row_count();
                     s.scroll_state = ScrollbarState::new(vis.saturating_sub(1));
                     let sel = s
