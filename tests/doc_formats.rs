@@ -361,3 +361,132 @@ fn a_key_named_value_is_not_mistaken_for_the_bare_column() {
         Some(&Node::Str("changed".into()))
     );
 }
+
+/// `(` and `)` through the app: expand a nested column, edit a cell inside the
+/// expansion, and fold it back.
+#[test]
+fn expand_and_contract_a_nested_column_from_the_app() {
+    use tuitab::types::Action;
+
+    let mut app = tuitab::app::App::new(&fixture("nested.json"), None).unwrap();
+    let meta_col = app
+        .stack
+        .active()
+        .dataframe
+        .columns
+        .iter()
+        .position(|c| c.name == "meta")
+        .unwrap();
+    app.stack.active_mut().cursor_col = meta_col;
+
+    app.handle_action(Action::ExpandColumn);
+    let names: Vec<String> = app
+        .stack
+        .active()
+        .dataframe
+        .columns
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+    assert!(names.contains(&"meta.ok".to_string()), "{:?}", names);
+    assert!(names.contains(&"meta.note".to_string()), "{:?}", names);
+    assert!(!names.contains(&"meta".to_string()), "parent is replaced: {:?}", names);
+
+    // an expanded cell is editable, and the edit lands on the real nested node
+    let ok_col = names.iter().position(|n| n == "meta.ok").unwrap();
+    {
+        let s = app.stack.active_mut();
+        s.edit_row = 0;
+        s.edit_col = ok_col;
+        s.edit_input = tuitab::ui::text_input::TextInput::with_value("false".into());
+    }
+    app.handle_action(Action::ApplyEdit);
+    let doc = app.stack.active().doc.as_ref().unwrap();
+    assert_eq!(
+        doc.doc
+            .read()
+            .unwrap()
+            .root
+            .get(&[Seg::Idx(0), Seg::Key("meta".into()), Seg::Key("ok".into())]),
+        Some(&tuitab::data::doc::Node::Bool(false)),
+        "editing an expanded column must write into the nested node"
+    );
+
+    app.stack.active_mut().cursor_col = ok_col;
+    app.handle_action(Action::ContractColumn);
+    let names: Vec<String> = app
+        .stack
+        .active()
+        .dataframe
+        .columns
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+    assert!(names.contains(&"meta".to_string()), "folded back: {:?}", names);
+}
+
+/// Expansion survives a reprojection — it lives on the view, not on the columns.
+#[test]
+fn expansion_survives_switching_back_from_a_dive() {
+    use tuitab::types::Action;
+
+    let mut app = tuitab::app::App::new(&fixture("nested.json"), None).unwrap();
+    let meta_col = app
+        .stack
+        .active()
+        .dataframe
+        .columns
+        .iter()
+        .position(|c| c.name == "meta")
+        .unwrap();
+    app.stack.active_mut().cursor_col = meta_col;
+    app.handle_action(Action::ExpandColumn);
+
+    // dive into a row and come back; the reprojection on pop must keep the expansion
+    app.stack.active_mut().cursor_col = 0;
+    app.handle_action(Action::OpenRow);
+    app.handle_action(Action::PopSheet);
+
+    let names: Vec<String> = app
+        .stack
+        .active()
+        .dataframe
+        .columns
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+    assert!(names.contains(&"meta.ok".to_string()), "{:?}", names);
+}
+
+/// Expanding columns is a view operation only: saving still writes the real nested
+/// structure, not flattened `meta.ok` keys.  (VisiData writes the flattened names.)
+#[test]
+fn expanding_columns_does_not_leak_into_the_saved_file() {
+    use tuitab::types::Action;
+
+    let mut app = tuitab::app::App::new(&fixture("nested.json"), None).unwrap();
+    let meta_col = app
+        .stack
+        .active()
+        .dataframe
+        .columns
+        .iter()
+        .position(|c| c.name == "meta")
+        .unwrap();
+    app.stack.active_mut().cursor_col = meta_col;
+    app.handle_action(Action::ExpandColumn);
+
+    let sheet = app.stack.active();
+    let path = out("nested-expanded.json");
+    save_file_as(
+        &sheet.dataframe,
+        sheet.doc.as_ref(),
+        &path,
+        Shape::Records,
+        &sheet.title,
+    )
+    .unwrap();
+    let json = std::fs::read_to_string(&path).unwrap();
+    assert!(json.contains("\"meta\""), "nesting is preserved: {}", json);
+    assert!(!json.contains("meta.ok"), "must not flatten on save: {}", json);
+}

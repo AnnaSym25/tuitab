@@ -78,7 +78,46 @@ impl DocState {
 
     pub fn set_mode(&mut self, mode: ViewMode) -> Result<DataFrame> {
         self.view.mode = mode;
+        self.view.expanded.clear();
         self.reproject()
+    }
+
+    /// Replace the column with one column per child of its containers (`(`).
+    pub fn expand_column(&mut self, col: usize) -> Result<DataFrame> {
+        let ColRole::Field(path) = self.column_role(col)? else {
+            return Err(eyre!("this column has no nested values to expand"));
+        };
+        if !self.column_has_container(col) {
+            return Err(eyre!("nothing to expand — this column holds no containers"));
+        }
+        if !self.view.expand(path) {
+            return Err(eyre!("already expanded"));
+        }
+        self.reproject()
+    }
+
+    /// Fold the innermost expansion covering this column back into one column (`)`).
+    pub fn contract_column(&mut self, col: usize) -> Result<DataFrame> {
+        let ColRole::Field(path) = self.column_role(col)? else {
+            return Err(eyre!("nothing to contract here"));
+        };
+        if !self.view.contract_one(&path) {
+            return Err(eyre!("this column is not expanded"));
+        }
+        self.reproject()
+    }
+
+    fn column_role(&self, col: usize) -> Result<ColRole> {
+        self.col_roles
+            .get(col)
+            .cloned()
+            .ok_or_else(|| eyre!("no such column"))
+    }
+
+    fn column_has_container(&self, col: usize) -> bool {
+        (0..self.row_paths.len())
+            .filter_map(|r| self.node_at(r, col))
+            .any(|n| n.is_container())
     }
 
     /// Modes offered by `m` for the currently anchored node.

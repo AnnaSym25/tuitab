@@ -30,8 +30,9 @@ pub enum ViewMode {
 /// What a column of the projection means, and therefore where an edit to it goes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ColRole {
-    /// Cell node is `row_node[seg]`.
-    Field(Seg),
+    /// Cell node is at `path` relative to the row node.  Normally one segment; an
+    /// expanded column carries the whole chain (`meta`, `ok` for `meta.ok`).
+    Field(Vec<Seg>),
     /// Cell node is the row node itself.
     Row,
     /// The object key naming this row; editing it renames the key.
@@ -44,6 +45,10 @@ pub enum ColRole {
 pub struct View {
     pub anchor: NodePath,
     pub mode: ViewMode,
+    /// Paths (relative to the row node) shown as their children instead of as one
+    /// container cell — the state behind `(` / `)`.  Kept on the view, not on the
+    /// columns, so it survives every reprojection.
+    pub expanded: Vec<Vec<Seg>>,
 }
 
 /// A built projection: the table plus the mapping back into the tree.
@@ -77,6 +82,7 @@ impl View {
         View {
             mode: View::auto_mode(node),
             anchor,
+            expanded: Vec::new(),
         }
     }
 
@@ -143,16 +149,11 @@ impl View {
             );
         }
         for key in &keys {
-            names.push(key.clone());
-            col_roles.push(ColRole::Field(Seg::Key(key.clone())));
-            cells.push(
-                rows.iter()
-                    .map(|r| match r {
-                        Node::Obj(m) => m.get(key.as_str()),
-                        _ => None,
-                    })
-                    .collect(),
-            );
+            let path = vec![Seg::Key(key.clone())];
+            // An expanded column is replaced in place by its children, so the expansion
+            // reads as a wider version of the same column rather than a new group at
+            // the end.  Children of children are expanded too, recursively.
+            self.push_column(&path, &rows, &mut names, &mut col_roles, &mut cells);
         }
 
         Ok(Projection {
@@ -160,6 +161,73 @@ impl View {
             row_paths,
             col_roles,
         })
+    }
+
+    /// Emit one column for `path`, or — if it is expanded — the columns of its children.
+    fn push_column<'a>(
+        &self,
+        path: &[Seg],
+        rows: &[&'a Node],
+        names: &mut Vec<String>,
+        col_roles: &mut Vec<ColRole>,
+        cells: &mut Vec<Vec<Option<&'a Node>>>,
+    ) {
+        let values: Vec<Option<&Node>> = rows.iter().map(|r| r.get(path)).collect();
+
+        if self.is_expanded(path) {
+            let children = child_segments(&values);
+            if !children.is_empty() {
+                for seg in children {
+                    let mut child = path.to_vec();
+                    child.push(seg);
+                    self.push_column(&child, rows, names, col_roles, cells);
+                }
+                return;
+            }
+            // Nothing to expand into any more (the values stopped being containers);
+            // fall through and show the column as it is rather than dropping it.
+        }
+
+        names.push(crate::data::doc::path_to_string(path));
+        col_roles.push(ColRole::Field(path.to_vec()));
+        cells.push(values);
+    }
+
+    fn is_expanded(&self, path: &[Seg]) -> bool {
+        self.expanded.iter().any(|p| p == path)
+    }
+
+    /// Mark `path` expanded.  Returns false if it was already.
+    pub fn expand(&mut self, path: Vec<Seg>) -> bool {
+        if self.is_expanded(&path) {
+            return false;
+        }
+        self.expanded.push(path);
+        true
+    }
+
+    /// Collapse `path` and everything expanded beneath it.  Returns false if nothing
+    /// was expanded there.
+    pub fn contract(&mut self, path: &[Seg]) -> bool {
+        let before = self.expanded.len();
+        self.expanded
+            .retain(|p| !(p.len() >= path.len() && &p[..path.len()] == path));
+        self.expanded.len() != before
+    }
+
+    /// Collapse one level: the deepest expansion that is a prefix of `path`, so `)` on
+    /// `a.b.c` folds `a.b` back into a single column and leaves `a` expanded.
+    pub fn contract_one(&mut self, path: &[Seg]) -> bool {
+        let Some(target) = self
+            .expanded
+            .iter()
+            .filter(|p| p.len() <= path.len() && path[..p.len()] == p[..])
+            .max_by_key(|p| p.len())
+            .cloned()
+        else {
+            return false;
+        };
+        self.contract(&target)
     }
 
     fn project_keyvalue(&self, node: &Node) -> Result<Projection> {
@@ -224,6 +292,29 @@ impl View {
 /// `options.default_colname`.
 pub const DEFAULT_COLNAME: &str = "value";
 
+/// Segments to expand a column into, derived from every value in it.
+///
+/// Objects contribute the union of their keys in order of first appearance; arrays
+/// contribute indices up to the longest one.  Mixed columns are allowed — a row that is
+/// not a container simply has no value under the child columns.  Returns empty when no
+/// value is a container, which is what makes `(` a no-op on a scalar column.
+fn child_segments(values: &[Option<&Node>]) -> Vec<Seg> {
+    let mut keys: IndexSet<String> = IndexSet::new();
+    let mut max_len = 0usize;
+    for v in values.iter().flatten() {
+        match v {
+            Node::Obj(m) => keys.extend(m.keys().cloned()),
+            Node::Arr(a) => max_len = max_len.max(a.len()),
+            _ => {}
+        }
+    }
+    // Objects win when a column mixes both: named columns beat positional ones.
+    if !keys.is_empty() {
+        return keys.into_iter().map(Seg::Key).collect();
+    }
+    (0..max_len).map(Seg::Idx).collect()
+}
+
 /// Pick a column name for the bare-value column that no real key already uses.
 fn unique_name(base: &str, taken: &IndexSet<String>) -> String {
     if !taken.contains(base) {
@@ -249,7 +340,7 @@ pub fn cell_path(
     let base = row_paths.get(row)?;
     match col_roles.get(col)? {
         ColRole::Row | ColRole::Key => Some(base.clone()),
-        ColRole::Field(seg) => Some(child_path(base, seg.clone())),
+        ColRole::Field(path) => Some(base.iter().chain(path).cloned().collect()),
         ColRole::Type => None,
     }
 }
@@ -415,6 +506,7 @@ mod tests {
         let p = View {
             anchor: vec![],
             mode: ViewMode::Records,
+            expanded: Vec::new(),
         }
         .project(&root)
         .unwrap();
@@ -439,5 +531,78 @@ mod tests {
                 Seg::Key("host".into())
             ])
         );
+    }
+
+    #[test]
+    fn expanding_a_column_replaces_it_with_its_children_in_place() {
+        let root = root_of(
+            r#"[{"id":1,"meta":{"ok":true,"n":2}},{"id":2,"meta":{"ok":false}}]"#,
+            Format::Json,
+        );
+        let mut view = View::auto(vec![], &root);
+        assert!(view.expand(vec![Seg::Key("meta".into())]));
+        let p = view.project(&root).unwrap();
+
+        let names: Vec<String> = p.df.columns.iter().map(|c| c.name.clone()).collect();
+        assert_eq!(names, vec!["id", "meta.ok", "meta.n"], "children sit where the parent was");
+        assert_eq!(p.df.get_physical(0, 2), "2");
+        assert_eq!(p.df.get_physical(1, 2), "", "row without the key is empty, not an error");
+        assert_eq!(
+            cell_path(&p.row_paths, &p.col_roles, 0, 1),
+            Some(vec![Seg::Idx(0), Seg::Key("meta".into()), Seg::Key("ok".into())]),
+            "an expanded cell still addresses its real node, so it stays editable"
+        );
+    }
+
+    #[test]
+    fn expanding_a_list_column_uses_the_longest_row() {
+        let root = root_of(r#"[{"t":["a","b","c"]},{"t":["x"]}]"#, Format::Json);
+        let mut view = View::auto(vec![], &root);
+        view.expand(vec![Seg::Key("t".into())]);
+        let p = view.project(&root).unwrap();
+        let names: Vec<String> = p.df.columns.iter().map(|c| c.name.clone()).collect();
+        assert_eq!(names, vec!["t[0]", "t[1]", "t[2]"]);
+        assert_eq!(p.df.get_physical(1, 1), "", "short row has no second element");
+    }
+
+    #[test]
+    fn expansion_nests_and_contracts_one_level_at_a_time() {
+        let root = root_of(r#"[{"a":{"b":{"c":1}}}]"#, Format::Json);
+        let mut view = View::auto(vec![], &root);
+        view.expand(vec![Seg::Key("a".into())]);
+        view.expand(vec![Seg::Key("a".into()), Seg::Key("b".into())]);
+        let names = |v: &View| -> Vec<String> {
+            v.project(&root).unwrap().df.columns.iter().map(|c| c.name.clone()).collect()
+        };
+        assert_eq!(names(&view), vec!["a.b.c"]);
+
+        // `)` on a.b.c folds a.b, leaving a expanded
+        assert!(view.contract_one(&[Seg::Key("a".into()), Seg::Key("b".into()), Seg::Key("c".into())]));
+        assert_eq!(names(&view), vec!["a.b"]);
+
+        assert!(view.contract_one(&[Seg::Key("a".into()), Seg::Key("b".into())]));
+        assert_eq!(names(&view), vec!["a"]);
+
+        assert!(!view.contract_one(&[Seg::Key("a".into())]), "nothing left to fold");
+    }
+
+    #[test]
+    fn contracting_a_parent_drops_deeper_expansions_too() {
+        let root = root_of(r#"[{"a":{"b":{"c":1}}}]"#, Format::Json);
+        let mut view = View::auto(vec![], &root);
+        view.expand(vec![Seg::Key("a".into())]);
+        view.expand(vec![Seg::Key("a".into()), Seg::Key("b".into())]);
+        assert!(view.contract(&[Seg::Key("a".into())]));
+        assert!(view.expanded.is_empty(), "{:?}", view.expanded);
+    }
+
+    #[test]
+    fn expanding_a_column_of_scalars_leaves_it_alone() {
+        let root = root_of(r#"[{"n":1},{"n":2}]"#, Format::Json);
+        let mut view = View::auto(vec![], &root);
+        view.expand(vec![Seg::Key("n".into())]);
+        let p = view.project(&root).unwrap();
+        let names: Vec<String> = p.df.columns.iter().map(|c| c.name.clone()).collect();
+        assert_eq!(names, vec!["n"], "a scalar column has no children to show");
     }
 }

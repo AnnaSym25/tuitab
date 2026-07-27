@@ -36,9 +36,10 @@ cat data.csv | tuitab -t csv      # read from a pipe
   YAML, TOML, Parquet, Excel (xlsx/xls), SQLite, DuckDB. Browse a whole directory, or
   pipe data in over stdin.
 - **Nested data, edited in place** — JSON/YAML/TOML open as a table over the real
-  document: `Enter` dives into a nested object or list, `m` switches between
-  record and key/value layouts, and edits write back into the document, not into a
-  flattened copy. Saving re-serialises the tree, so structure survives.
+  document: `Enter` dives into a nested object or list, `(` expands a nested column
+  into one column per key, `m` switches between record and key/value layouts, and edits
+  write back into the document, not into a flattened copy. Saving re-serialises the
+  tree, so structure survives.
 - **Vim-style navigation** — `hjkl`, `gg`/`G`, page jumps, sticky pinned columns.
 - **Instant analysis** — per-column statistics, frequency tables, and charts
   (histogram, bar, line, grouped bar) rendered right in the terminal.
@@ -223,6 +224,7 @@ for every command (column ops, clipboard, dedup, and more).
 | `W` | Pivot table | `Enter` | Transpose row / drill down / dive into node |
 | `J` | JOIN with another table | `T` | Transpose table |
 | `m` | Cycle JSON/YAML/TOML layout | `zEnter` | Dive into the node in this cell |
+| `(` / `)` | Expand / fold a nested column | | |
 | `E` | Edit cell (or node) in `$EDITOR` | `Ctrl+S` | Save / export / convert |
 | `U` / `Ctrl+R` | Undo / redo | | |
 | `?` | Help | `q` | Quit / pop sheet |

@@ -231,6 +231,10 @@ pub enum Action {
     OpenCell,
     /// Cycle how the anchored node is projected: records / key-value / scalars
     CycleViewMode,
+    /// Expand the cursor column of containers into one column per child
+    ExpandColumn,
+    /// Fold an expanded column back into a single container column
+    ContractColumn,
 
     // ── Save/export ───────────────────────────────────────────────────────────
     SaveFile,

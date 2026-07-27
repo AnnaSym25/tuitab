@@ -105,6 +105,45 @@ impl App {
             Err(e) => self.status_message = e.to_string(),
         }
     }
+
+    /// Expand the cursor column of containers into one column per child (`(`).
+    pub(crate) fn expand_column(&mut self) {
+        self.reshape_columns(true);
+    }
+
+    /// Fold the innermost expansion covering the cursor column back (`)`).
+    pub(crate) fn contract_column(&mut self) {
+        self.reshape_columns(false);
+    }
+
+    fn reshape_columns(&mut self, expand: bool) {
+        let s = self.stack.active_mut();
+        let col = s.cursor_col;
+        let Some(doc) = s.doc.as_mut() else {
+            self.status_message = "Not a JSON/YAML/TOML sheet".to_string();
+            return;
+        };
+        let result = if expand {
+            doc.expand_column(col)
+        } else {
+            doc.contract_column(col)
+        };
+        match result {
+            Ok(df) => {
+                let ncols = df.columns.len();
+                s.dataframe = df;
+                // The column is replaced in place, so keeping the cursor index lands on
+                // the first child — which is what the user was looking at.
+                s.cursor_col = col.min(ncols.saturating_sub(1));
+                s.table_state.select_column(Some(s.cursor_col));
+                // A sort on a column that may no longer exist cannot be kept.
+                s.sort_col = None;
+                s.left_col = s.left_col.min(s.cursor_col);
+                self.status_message = format!("{} columns", ncols);
+            }
+            Err(e) => self.status_message = e.to_string(),
+        }
+    }
 }
 
 fn mode_name(m: crate::data::view::ViewMode) -> &'static str {

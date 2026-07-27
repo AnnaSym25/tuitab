@@ -618,6 +618,8 @@ impl App {
                 }
             }
             Action::CycleViewMode => self.cycle_view_mode(),
+            Action::ExpandColumn => self.expand_column(),
+            Action::ContractColumn => self.contract_column(),
             Action::ResetSort => {
                 let s = self.stack.active_mut();
                 s.push_undo();
