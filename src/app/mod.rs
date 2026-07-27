@@ -622,6 +622,19 @@ impl App {
             }
             Action::CycleViewMode => self.cycle_view_mode(),
             Action::StartDocSearch => self.start_doc_search(),
+            Action::StartPathGoto => self.start_path_goto(),
+            Action::ApplyPathGoto => self.apply_path_goto(),
+            Action::CancelPathGoto => {
+                self.mode = AppMode::Normal;
+                self.stack.active_mut().path_input.clear();
+            }
+            Action::PathInputChar(c) => self.stack.active_mut().path_input.insert_char(c),
+            Action::PathBackspace => self.stack.active_mut().path_input.delete_backward(),
+            Action::PathForwardDelete => self.stack.active_mut().path_input.delete_forward(),
+            Action::PathCursorLeft => self.stack.active_mut().path_input.move_cursor_left(),
+            Action::PathCursorRight => self.stack.active_mut().path_input.move_cursor_right(),
+            Action::PathCursorStart => self.stack.active_mut().path_input.move_cursor_start(),
+            Action::PathCursorEnd => self.stack.active_mut().path_input.move_cursor_end(),
             Action::ApplyDocSearch => self.apply_doc_search(),
             Action::CancelDocSearch => {
                 self.mode = AppMode::Normal;

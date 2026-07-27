@@ -75,7 +75,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         | AppMode::DedupTiebreakerSelect
         | AppMode::SaveShapeSelect
         | AppMode::OpenAsSelect
-        | AppMode::DocSearching => {
+        | AppMode::DocSearching
+        | AppMode::PathInput => {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -258,6 +259,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             }
             if app.mode == AppMode::CopyFormatSelect {
                 popup::render_copy_format_popup(frame, app, frame.area());
+            }
+            if app.mode == AppMode::PathInput {
+                popup::render_input_popup(
+                    frame,
+                    "Go to path (e.g. servers[1].host) — Enter to jump, Esc to cancel",
+                    &app.stack.active().path_input,
+                    None,
+                    frame.area(),
+                );
             }
             if app.mode == AppMode::SaveShapeSelect {
                 let items: Vec<(String, String)> = app

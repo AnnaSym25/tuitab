@@ -166,6 +166,7 @@ all still defaults to CSV, and is only re-read as JSON when it starts with `[` o
 | `yp` | Copy the document path of the current cell (`servers[1].host`) |
 | `q` / `Esc` | Go back up one level |
 | `g/` | Search the whole document — see below |
+| `gp` | Go to a node by its document path |
 | `m` | Cycle the layout: records / key-value / scalars |
 | `(` | Expand the cursor column of containers into `parent.key` / `parent[0]` columns |
 | `)` | Fold the innermost expansion back into one column |
@@ -188,7 +189,10 @@ somewhere else — run `g/` again.
 
 When there is nothing more urgent to report, the status line shows the document path of
 the cell under the cursor — `servers[1].host` — which is what you need to refer to a
-value anywhere else. `yp` copies it.
+value anywhere else. `yp` copies it and `gp` jumps to one, prefilled with where you are;
+the three use the same syntax, so a copied path can be pasted straight back. A key that
+would be ambiguous in dotted form is written `["awkward.key"]`. A path that does not
+resolve says how far it got — `servers[1] exists` — instead of only that it failed.
 
 A conversion that cannot carry everything says so in the status line as it saves —
 multi-document YAML written as JSON, or a commented TOML written as anything else.

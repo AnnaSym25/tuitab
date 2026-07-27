@@ -84,6 +84,8 @@ pub enum AppMode {
     OpenAsSelect,
     /// Typing a pattern to search the whole document, not just the visible projection
     DocSearching,
+    /// Typing a document path to jump to (`gp`)
+    PathInput,
 }
 
 /// Distinguishes a regular data sheet from derived views.
@@ -245,6 +247,17 @@ pub enum Action {
     StartDocSearch,
     ApplyDocSearch,
     CancelDocSearch,
+    /// Jump to a node by typing its document path (`gp`)
+    StartPathGoto,
+    ApplyPathGoto,
+    CancelPathGoto,
+    PathInputChar(char),
+    PathBackspace,
+    PathForwardDelete,
+    PathCursorLeft,
+    PathCursorRight,
+    PathCursorStart,
+    PathCursorEnd,
     /// Move the highlight in a single-choice popup
     ChoiceUp,
     ChoiceDown,

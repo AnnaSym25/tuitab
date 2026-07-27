@@ -1247,3 +1247,68 @@ fn a_stale_hit_refuses_rather_than_opening_the_wrong_node() {
     );
 }
 
+
+/// `gp` jumps to a node by its path — the same text `yp` copies and the status line
+/// shows, so the three agree.
+#[test]
+fn goto_path_jumps_to_the_node_and_reports_a_wrong_path_usefully() {
+    use tuitab::types::{Action, AppMode};
+
+    let path = out("goto.json");
+    std::fs::write(
+        &path,
+        r#"{"servers":[{"host":"a"},{"host":"b"}],"awkward.key":{"x":1}}"#,
+    )
+    .unwrap();
+    let mut app = tuitab::app::App::new(&path, None).unwrap();
+
+    app.handle_action(Action::StartPathGoto);
+    assert_eq!(app.mode, AppMode::PathInput);
+    app.stack.active_mut().path_input =
+        tuitab::ui::text_input::TextInput::with_value("servers[1].host".into());
+    app.handle_action(Action::ApplyPathGoto);
+
+    let s = app.stack.active();
+    assert!(s.title.ends_with("servers › [1]"), "{}", s.title);
+    assert_eq!(
+        s.doc.as_ref().unwrap().view.anchor,
+        vec![Seg::Key("servers".into()), Seg::Idx(1)]
+    );
+    // cursor sits on the addressed key
+    let row = s.table_state.selected().unwrap();
+    assert_eq!(s.dataframe.get_physical(s.dataframe.row_order[row], 0), "host");
+
+    // a key that needs quoting round-trips
+    app.handle_action(Action::PopSheet);
+    app.handle_action(Action::StartPathGoto);
+    app.stack.active_mut().path_input =
+        tuitab::ui::text_input::TextInput::with_value("[\"awkward.key\"]".into());
+    app.handle_action(Action::ApplyPathGoto);
+    assert_eq!(
+        app.stack.active().doc.as_ref().unwrap().view.anchor,
+        vec![Seg::Key("awkward.key".into())],
+        "{}",
+        app.status_message
+    );
+
+    // a wrong path says how far it got, and pushes nothing
+    app.handle_action(Action::PopSheet);
+    let depth = app.stack.depth();
+    app.handle_action(Action::StartPathGoto);
+    app.stack.active_mut().path_input =
+        tuitab::ui::text_input::TextInput::with_value("servers[1].nope".into());
+    app.handle_action(Action::ApplyPathGoto);
+    assert_eq!(app.stack.depth(), depth);
+    assert!(
+        app.status_message.contains("servers[1]") && app.status_message.contains("exists"),
+        "{}",
+        app.status_message
+    );
+
+    // and a malformed path is refused rather than guessed at
+    app.handle_action(Action::StartPathGoto);
+    app.stack.active_mut().path_input =
+        tuitab::ui::text_input::TextInput::with_value("servers[1".into());
+    app.handle_action(Action::ApplyPathGoto);
+    assert!(app.status_message.contains("Bad path"), "{}", app.status_message);
+}

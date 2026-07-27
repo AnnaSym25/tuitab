@@ -225,17 +225,36 @@ impl App {
             return;
         }
         let handle = std::sync::Arc::clone(&hits.doc);
-        let source = s.source_path.clone();
-        let root_name = root_name(&s.title);
+        self.open_node_path(handle, &path);
+    }
+
+    /// Push a sheet showing `path`: a container as itself, a scalar's parent so the
+    /// value is seen in context, with the cursor on it either way.  Shared by search
+    /// hits and by `gp`.
+    pub(crate) fn open_node_path(
+        &mut self,
+        handle: std::sync::Arc<std::sync::RwLock<crate::data::doc::Doc>>,
+        path: &[Seg],
+    ) {
+        let source = self.stack.active().source_path.clone();
+        let root_name = root_name(&self.stack.active().title);
 
         let (anchor, cursor_key) = {
             let Ok(guard) = handle.read() else { return };
-            match guard.root.get(&path) {
-                Some(n) if n.is_container() => (path.clone(), None),
-                _ => {
-                    let mut parent = path.clone();
+            match guard.root.get(path) {
+                Some(n) if n.is_container() => (path.to_vec(), None),
+                Some(_) => {
+                    let mut parent = path.to_vec();
                     let last = parent.pop();
                     (parent, last)
+                }
+                None => {
+                    self.status_message = format!(
+                        "No node at `{}`{}",
+                        crate::data::doc::path_to_string(path),
+                        deepest_existing(&guard.root, path)
+                    );
+                    return;
                 }
             }
         };
@@ -252,6 +271,40 @@ impl App {
             }
             Err(e) => self.status_message = e.to_string(),
         }
+    }
+
+    /// Prompt for a path to jump to (`gp`), prefilled with where the cursor is now so
+    /// a nearby node is a small edit away.
+    pub(crate) fn start_path_goto(&mut self) {
+        if self.stack.active().doc.is_none() {
+            self.mode = AppMode::Normal;
+            self.status_message = "Go to path needs a JSON/YAML/TOML sheet".to_string();
+            return;
+        }
+        let here = self
+            .cursor_node_path(true)
+            .map(|p| crate::data::doc::path_to_string(&p))
+            .unwrap_or_default();
+        self.stack.active_mut().path_input = crate::ui::text_input::TextInput::with_value(here);
+        self.mode = AppMode::PathInput;
+        self.status_message.clear();
+    }
+
+    pub(crate) fn apply_path_goto(&mut self) {
+        self.mode = AppMode::Normal;
+        let text = self.stack.active().path_input.as_str().to_string();
+        let path = match crate::data::doc::parse_path(&text) {
+            Ok(p) => p,
+            Err(e) => {
+                self.status_message = format!("Bad path: {}", e);
+                return;
+            }
+        };
+        let Some(doc) = self.stack.active().doc.as_ref() else {
+            return;
+        };
+        let handle = std::sync::Arc::clone(&doc.doc);
+        self.open_node_path(handle, &path);
     }
 
     /// Expand the cursor column of containers into one column per child (`(`).
@@ -291,6 +344,27 @@ impl App {
             }
             Err(e) => self.status_message = e.to_string(),
         }
+    }
+}
+
+/// Name the deepest prefix of `path` that does exist, so a typo says where it went
+/// wrong instead of only that it did.
+fn deepest_existing(root: &crate::data::doc::Node, path: &[Seg]) -> String {
+    let mut best = 0;
+    for n in 1..path.len() {
+        if root.get(&path[..n]).is_some() {
+            best = n;
+        } else {
+            break;
+        }
+    }
+    if best == 0 {
+        String::new()
+    } else {
+        format!(
+            " — `{}` exists",
+            crate::data::doc::path_to_string(&path[..best])
+        )
     }
 }
 

@@ -77,6 +77,9 @@ pub struct Sheet {
     // ── Select by regex state (|) ─────────────────────────────────────────────
     pub select_regex_input: TextInput,
 
+    /// Path typed for `gp` (go to a node by its document path)
+    pub path_input: TextInput,
+
     // ── Expression state (=) ──────────────────────────────────────────────────
     pub expr_input: TextInput,
 
@@ -147,6 +150,7 @@ impl Sheet {
             search_pattern: None,
             search_col: None,
             select_regex_input: TextInput::new(),
+            path_input: TextInput::new(),
             expr_input: TextInput::new(),
             edit_input: TextInput::new(),
             edit_row: 0,

@@ -180,20 +180,85 @@ pub enum Seg {
 pub type NodePath = Vec<Seg>;
 
 /// Render a path the way it is shown in breadcrumbs and expanded column names.
+///
+/// A key that would be ambiguous in dotted form — one containing `.`, `[` or `]`, or an
+/// empty one — is written `["like this"]`, so what [`parse_path`] reads back is the path
+/// that went in.  Without that, copying the path of a key called `a.b` would produce
+/// something that silently resolves elsewhere.
 pub fn path_to_string(path: &[Seg]) -> String {
     let mut s = String::new();
     for seg in path {
         match seg {
-            Seg::Key(k) => {
+            Seg::Key(k) if is_simple_key(k) => {
                 if !s.is_empty() {
                     s.push('.');
                 }
                 s.push_str(k);
             }
+            Seg::Key(k) => s.push_str(&format!("[{:?}]", k)),
             Seg::Idx(i) => s.push_str(&format!("[{}]", i)),
         }
     }
     s
+}
+
+/// Read a `\`-escaped string body up to its closing quote, returning it and the rest.
+fn read_quoted(body: &str) -> Option<(String, &str)> {
+    let mut out = String::new();
+    let mut chars = body.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '\\' => {
+                let (_, esc) = chars.next()?;
+                out.push(esc);
+            }
+            '"' => return Some((out, &body[i + 1..])),
+            other => out.push(other),
+        }
+    }
+    None
+}
+
+fn is_simple_key(k: &str) -> bool {
+    !k.is_empty() && !k.contains(['.', '[', ']', '"'])
+}
+
+/// Parse `servers[1].host` — or `["awkward.key"].x` — back into a path.
+pub fn parse_path(text: &str) -> Result<NodePath> {
+    let mut out = NodePath::new();
+    let mut rest = text.trim();
+    while !rest.is_empty() {
+        rest = rest.strip_prefix('.').unwrap_or(rest);
+        if let Some(after) = rest.strip_prefix('[') {
+            // A quoted key may itself contain `]`, so the closing quote has to be found
+            // before the closing bracket, not after it.
+            if let Some(body) = after.strip_prefix('"') {
+                let (key, tail) = read_quoted(body)
+                    .ok_or_else(|| eyre!("unterminated quoted key in `{}`", text))?;
+                rest = tail
+                    .strip_prefix(']')
+                    .ok_or_else(|| eyre!("expected `]` after a quoted key in `{}`", text))?;
+                out.push(Seg::Key(key));
+                continue;
+            }
+            let (inner, tail) = after
+                .split_once(']')
+                .ok_or_else(|| eyre!("unclosed `[` in `{}`", text))?;
+            out.push(Seg::Idx(inner.trim().parse::<usize>().map_err(|_| {
+                eyre!("`{}` is neither an index nor a quoted key", inner.trim())
+            })?));
+            rest = tail;
+            continue;
+        }
+        let end = rest.find(['.', '[']).unwrap_or(rest.len());
+        let (key, tail) = rest.split_at(end);
+        if key.is_empty() {
+            return Err(eyre!("empty path segment in `{}`", text));
+        }
+        out.push(Seg::Key(key.to_string()));
+        rest = tail;
+    }
+    Ok(out)
 }
 
 /// A parsed document plus the format and path it came from.
@@ -1251,5 +1316,31 @@ host = \"b\"
             a,
             b
         );
+    }
+
+    #[test]
+    fn paths_round_trip_through_text_including_awkward_keys() {
+        for path in [
+            vec![Seg::Key("servers".into()), Seg::Idx(1), Seg::Key("host".into())],
+            vec![Seg::Key("a.b".into()), Seg::Key("c".into())],
+            vec![Seg::Key("has[bracket]".into())],
+            vec![Seg::Idx(0), Seg::Idx(2)],
+            vec![],
+        ] {
+            let text = path_to_string(&path);
+            assert_eq!(parse_path(&text).unwrap(), path, "round trip of `{}`", text);
+        }
+        assert_eq!(
+            path_to_string(&[Seg::Key("servers".into()), Seg::Idx(1), Seg::Key("host".into())]),
+            "servers[1].host"
+        );
+        assert_eq!(path_to_string(&[Seg::Key("a.b".into())]), "[\"a.b\"]");
+    }
+
+    #[test]
+    fn a_malformed_path_is_rejected_rather_than_guessed() {
+        assert!(parse_path("servers[1").is_err(), "unclosed bracket");
+        assert!(parse_path("servers[x]").is_err(), "not an index, not quoted");
+        assert!(parse_path("a..b").is_err(), "empty segment");
     }
 }
