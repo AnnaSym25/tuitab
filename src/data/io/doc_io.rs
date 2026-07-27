@@ -84,8 +84,14 @@ impl DocState {
 
     /// Replace the column with one column per child of its containers (`(`).
     pub fn expand_column(&mut self, col: usize) -> Result<DataFrame> {
+        // Only record columns expand.  In key/value mode every row is a different node,
+        // so there is no common set of children to make columns out of — diving is the
+        // right move there, and the message has to say so rather than claim the column
+        // holds no containers when it plainly does.
         let ColRole::Field(path) = self.column_role(col)? else {
-            return Err(eyre!("this column has no nested values to expand"));
+            return Err(eyre!(
+                "expand works on record columns — press Enter to dive in here"
+            ));
         };
         if !self.column_has_container(col) {
             return Err(eyre!("nothing to expand — this column holds no containers"));
@@ -165,7 +171,7 @@ impl DocState {
 
         let old = guard.root.get(&path).cloned();
         if matches!(old, Some(ref n) if n.is_container()) {
-            return Err(eyre!("edit a container with `ze`, not as a cell"));
+            return Err(eyre!("press E to edit this container in $EDITOR"));
         }
         let new = Node::parse_scalar(text, old.as_ref());
         let shown = new.to_cell_string();
@@ -463,7 +469,7 @@ mod tests {
     fn container_cells_refuse_inline_edits() {
         let (_df, mut st) = state(r#"{"db":{"host":"h"}}"#, Format::Json);
         let err = st.set_cell(0, 1, "nonsense").unwrap_err().to_string();
-        assert!(err.contains("ze"), "{}", err);
+        assert!(err.contains("E to edit"), "{}", err);
     }
 
     #[test]

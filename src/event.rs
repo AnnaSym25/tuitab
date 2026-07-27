@@ -128,8 +128,6 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
                         'i' => Action::DescribeSheet,
                         'e' => Action::StartEdit,
                         'm' => Action::CycleViewMode,
-                        '(' => Action::ExpandColumn,
-                        ')' => Action::ContractColumn,
                         'F' => Action::OpenFrequencyTable,
                         'Z' => Action::QuickAggregate,
                         'U' => Action::Undo,

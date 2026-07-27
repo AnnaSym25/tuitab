@@ -180,12 +180,24 @@ impl Sheet {
     }
 
     fn restore(&mut self, state: UndoState) {
-        self.dataframe = state.dataframe;
-        if let (Some(doc), Some(root)) = (self.doc.as_ref(), state.root) {
+        // A doc-backed sheet rebuilds its table from the restored tree instead of taking
+        // the snapshotted one.  The snapshot was taken before whatever view operation
+        // happened since (expand, mode switch, a node edit that changed the row count),
+        // so reusing it would leave `col_roles`/`row_paths` describing a different shape
+        // than the table on screen — and the next cell edit would write to the wrong
+        // node.  Rebuilding makes the two agree by construction, and gives `U` the
+        // semantics you want anyway: it undoes the document edit, not the view.
+        if let (Some(doc), Some(root)) = (self.doc.as_mut(), state.root) {
             if let Ok(mut guard) = doc.doc.write() {
                 guard.root = root;
             }
+            if let Ok(df) = doc.reproject() {
+                self.dataframe = df;
+                self.clamp_cursor();
+                return;
+            }
         }
+        self.dataframe = state.dataframe;
         self.clamp_cursor();
     }
 

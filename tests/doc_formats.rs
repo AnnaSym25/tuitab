@@ -490,3 +490,46 @@ fn expanding_columns_does_not_leak_into_the_saved_file() {
     assert!(json.contains("\"meta\""), "nesting is preserved: {}", json);
     assert!(!json.contains("meta.ok"), "must not flatten on save: {}", json);
 }
+
+/// Undo must never leave the table and the cell→node mapping describing different
+/// shapes: the next edit would then write into the wrong node, silently.
+#[test]
+fn undo_after_expanding_keeps_the_table_and_the_node_mapping_in_step() {
+    use tuitab::types::Action;
+
+    let mut app = tuitab::app::App::new(&fixture("nested.json"), None).unwrap();
+
+    // one document edit, so there is something on the undo stack
+    {
+        let s = app.stack.active_mut();
+        s.edit_row = 0;
+        s.edit_col = s.dataframe.columns.iter().position(|c| c.name == "name").unwrap();
+        s.edit_input = tuitab::ui::text_input::TextInput::with_value("ALPHA".into());
+    }
+    app.handle_action(Action::ApplyEdit);
+
+    let meta_col = app
+        .stack
+        .active()
+        .dataframe
+        .columns
+        .iter()
+        .position(|c| c.name == "meta")
+        .unwrap();
+    app.stack.active_mut().cursor_col = meta_col;
+    app.handle_action(Action::ExpandColumn);
+    app.handle_action(Action::Undo);
+
+    let s = app.stack.active();
+    let doc = s.doc.as_ref().unwrap();
+    assert_eq!(
+        doc.col_roles.len(),
+        s.dataframe.columns.len(),
+        "column roles must describe the table that is actually shown"
+    );
+    assert_eq!(doc.row_paths.len(), s.dataframe.df.height());
+
+    // and the undo actually reverted the document edit
+    let name_col = s.dataframe.columns.iter().position(|c| c.name == "name").unwrap();
+    assert_eq!(s.dataframe.get_physical(0, name_col), "alpha");
+}
