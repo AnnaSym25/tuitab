@@ -430,6 +430,13 @@ fn apply_table(map: &IndexMap<String, Node>, tbl: &mut dyn toml_edit::TableLike)
         }
     }
     for (k, node) in map {
+        // TOML has no null, and the from-scratch writer drops such keys.  This writer
+        // must do the same or the two would disagree — and writing `b = ""` in place of
+        // a null would quietly change the meaning of a config file.
+        if matches!(node, Node::Null) {
+            tbl.remove(k);
+            continue;
+        }
         match tbl.get_mut(k) {
             Some(item) => apply_item(node, item),
             None => {
@@ -491,7 +498,9 @@ fn apply_item(node: &Node, item: &mut toml_edit::Item) {
                 }
             }
             if let Some(arr) = item.as_array_mut() {
-                if arr.len() == items.len() {
+                // Nulls are dropped from arrays, so a null anywhere means the length
+                // changes and the array has to be rebuilt rather than updated in place.
+                if arr.len() == items.len() && !items.iter().any(|n| matches!(n, Node::Null)) {
                     for (v, n) in arr.iter_mut().zip(items) {
                         apply_value(n, v);
                     }
@@ -522,7 +531,7 @@ fn apply_value(node: &Node, slot: &mut toml_edit::Value) {
         }
         Node::Arr(items) => {
             if let Some(arr) = slot.as_array_mut() {
-                if arr.len() == items.len() {
+                if arr.len() == items.len() && !items.iter().any(|n| matches!(n, Node::Null)) {
                     for (v, n) in arr.iter_mut().zip(items) {
                         apply_value(n, v);
                     }
@@ -543,6 +552,9 @@ fn node_to_item(node: &Node) -> toml_edit::Item {
         Node::Obj(map) => {
             let mut t = toml_edit::Table::new();
             for (k, v) in map {
+                if matches!(v, Node::Null) {
+                    continue;
+                }
                 t.insert(k, node_to_item(v));
             }
             toml_edit::Item::Table(t)
@@ -555,8 +567,8 @@ fn node_to_item(node: &Node) -> toml_edit::Item {
 fn node_to_toml_value(node: &Node) -> toml_edit::Value {
     use toml_edit::Value as V;
     match node {
-        // TOML has no null; callers drop the key, so this is only reached for a null
-        // nested inside an array, where an empty string is the least-bad stand-in.
+        // Unreachable: every caller drops nulls before getting here, in both the key
+        // and the array case.  Kept total rather than panicking on a future caller.
         Node::Null => V::from(""),
         Node::Bool(b) => V::from(*b),
         Node::Int(i) => V::from(*i),
@@ -569,6 +581,9 @@ fn node_to_toml_value(node: &Node) -> toml_edit::Value {
         Node::Arr(items) => {
             let mut a = toml_edit::Array::new();
             for i in items {
+                if matches!(i, Node::Null) {
+                    continue;
+                }
                 a.push(node_to_toml_value(i));
             }
             V::Array(a)
@@ -576,6 +591,9 @@ fn node_to_toml_value(node: &Node) -> toml_edit::Value {
         Node::Obj(map) => {
             let mut t = toml_edit::InlineTable::new();
             for (k, v) in map {
+                if matches!(v, Node::Null) {
+                    continue;
+                }
                 t.insert(k, node_to_toml_value(v));
             }
             V::InlineTable(t)
@@ -1099,5 +1117,42 @@ host = \"b\"
         // Known limit: a rename is a removal plus an insertion as far as the source is
         // concerned, so the comment that sat on that key's line goes with it.
         assert!(!out.contains("# about b"), "documented loss: {}", out);
+    }
+
+    /// There are two TOML writers now — through the source text and from scratch — and
+    /// they must not disagree about anything.  Nulls are the case where they could:
+    /// the clean path drops the key, so the source-preserving path has to as well.
+    #[test]
+    fn both_toml_writers_agree_about_nulls() {
+        let src = "a = 1\nb = 2\nlist = [1, 2, 3]\n";
+        let mut with_source = Doc::from_str(src, Format::Toml).unwrap();
+        with_source
+            .root
+            .set(&[Seg::Key("b".into())], Node::Null)
+            .unwrap();
+        with_source
+            .root
+            .set(&[Seg::Key("list".into()), Seg::Idx(1)], Node::Null)
+            .unwrap();
+
+        let mut from_scratch = Doc::from_str(src, Format::Toml).unwrap();
+        from_scratch.source_text = None;
+        from_scratch.root = with_source.root.clone();
+
+        let a = with_source
+            .to_string_as(Format::Toml, &SaveOpts::default())
+            .unwrap();
+        let b = from_scratch
+            .to_string_as(Format::Toml, &SaveOpts::default())
+            .unwrap();
+
+        assert!(!a.contains("b ="), "null key must be dropped: {}", a);
+        assert_eq!(
+            Doc::from_str(&a, Format::Toml).unwrap().root,
+            Doc::from_str(&b, Format::Toml).unwrap().root,
+            "the two writers disagree:\n--- source path ---\n{}\n--- clean path ---\n{}",
+            a,
+            b
+        );
     }
 }
