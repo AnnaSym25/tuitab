@@ -45,6 +45,7 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect) {
             Style::default().fg(T::GREEN),
         )),
         Line::from("  y → c             Copy current cell (direct)"),
+        Line::from("  y → p             Copy document path of the cell"),
         Line::from("  y → r             Sel. rows or current row → format popup"),
         Line::from("  y → z             Sel. rows in current col → format popup"),
         Line::from("                    (no selection → copies current cell)"),

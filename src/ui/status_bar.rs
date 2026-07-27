@@ -84,10 +84,24 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         Some((shown, full)) => format!(" [clip {}/{}]", shown, full),
         None => String::new(),
     };
-    let base_status = format!(
-        " {}{}{}{}",
-        depth_hint, app.status_message, modified, clip_hint
-    );
+    // On a document sheet an idle status line is better spent on the path of the cell
+    // under the cursor: it is the thing you need in order to talk about a value, and
+    // nothing else on screen shows it.
+    let message = if app.status_message.is_empty() {
+        app.cursor_node_path(true)
+            .map(|p| {
+                let s = crate::data::doc::path_to_string(&p);
+                if s.is_empty() {
+                    "(root)".to_string()
+                } else {
+                    s
+                }
+            })
+            .unwrap_or_default()
+    } else {
+        app.status_message.clone()
+    };
+    let base_status = format!(" {}{}{}{}", depth_hint, message, modified, clip_hint);
     let final_status = if let Some((ref name, current, total)) = app.background_task {
         let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         let spin = spinner_chars[(app.spinner_tick as usize) % spinner_chars.len()];
@@ -103,7 +117,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     } else if app.mode == AppMode::Calculating {
         let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         let spin = spinner_chars[(app.spinner_tick as usize) % spinner_chars.len()];
-        format!("{} {} |{}", spin, app.status_message, base_status)
+        format!("{} {} |{}", spin, message, base_status)
     } else {
         base_status
     };

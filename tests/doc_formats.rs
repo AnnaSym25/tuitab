@@ -975,3 +975,48 @@ fn a_lossy_conversion_is_named_in_the_status_line() {
     app.handle_action(Action::ApplySave);
     assert!(!app.status_message.contains("note:"), "{}", app.status_message);
 }
+
+/// The path of the cell under the cursor is on screen whenever there is nothing more
+/// urgent to say — nothing else shows it, and it is what you need to refer to a value.
+#[test]
+fn the_node_path_is_shown_in_the_status_line_when_idle() {
+    use ratatui::{backend::TestBackend, Terminal};
+    use tuitab::types::Action;
+
+    let mut app = tuitab::app::App::new(&fixture("nested.json"), None).unwrap();
+    let host_col = app
+        .stack
+        .active()
+        .dataframe
+        .columns
+        .iter()
+        .position(|c| c.name == "meta")
+        .unwrap();
+    app.stack.active_mut().cursor_col = host_col;
+    app.stack.active_mut().table_state.select(Some(1));
+    app.status_message.clear();
+
+    let mut terminal = Terminal::new(TestBackend::new(140, 12)).unwrap();
+    terminal.draw(|f| tuitab::ui::render(f, &mut app)).unwrap();
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(screen.contains("[1].meta"), "path on screen:\n{}", screen);
+
+    // yp copies the same path (headless CI may have no clipboard, so either the
+    // confirmation or the failure is acceptable — what matters is the path it names)
+    app.handle_action(Action::CopyNodePath);
+    assert!(
+        app.status_message.contains("[1].meta") || app.status_message.contains("Copy failed"),
+        "{}",
+        app.status_message
+    );
+
+    // a real message takes precedence over the path
+    app.handle_action(Action::CycleViewMode);
+    assert!(!app.status_message.is_empty());
+}

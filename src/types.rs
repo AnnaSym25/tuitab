@@ -237,6 +237,8 @@ pub enum Action {
     CycleViewMode,
     /// Expand the cursor column of containers into one column per child
     ExpandColumn,
+    /// Copy the document path of the cell under the cursor (`yp`)
+    CopyNodePath,
     /// Move the highlight in a single-choice popup
     ChoiceUp,
     ChoiceDown,

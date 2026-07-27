@@ -163,6 +163,7 @@ all still defaults to CSV, and is only re-read as JSON when it starts with `[` o
 |-----|--------|
 | `Enter` | Dive into the node of the current row |
 | `zEnter` | Dive into the node of the current cell |
+| `yp` | Copy the document path of the current cell (`servers[1].host`) |
 | `q` / `Esc` | Go back up one level |
 | `m` | Cycle the layout: records / key-value / scalars |
 | `(` | Expand the cursor column of containers into `parent.key` / `parent[0]` columns |
@@ -171,6 +172,10 @@ all still defaults to CSV, and is only re-read as JSON when it starts with `[` o
 | `E` | Edit a container as text in `$EDITOR` (add, remove or reorder keys) |
 | `d` | Delete the selected rows — removes them from the document |
 | `Ctrl+S` | Save; a different extension converts the format |
+
+When there is nothing more urgent to report, the status line shows the document path of
+the cell under the cursor — `servers[1].host` — which is what you need to refer to a
+value anywhere else. `yp` copies it.
 
 A conversion that cannot carry everything says so in the status line as it saves —
 multi-document YAML written as JSON, or a commented TOML written as anything else.

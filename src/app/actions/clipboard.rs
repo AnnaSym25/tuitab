@@ -18,6 +18,10 @@ impl App {
                 self.status_message.clear();
                 None
             }
+            Action::CopyNodePath => {
+                self.copy_node_path();
+                None
+            }
             Action::CopyCurrentCell => {
                 let s = self.stack.active();
                 let row = s.table_state.selected().unwrap_or(0);
@@ -230,6 +234,22 @@ impl App {
                 crate::clipboard::copy_column_comma_quoted(values)?;
                 Ok("comma-separated, quoted")
             }
+        }
+    }
+
+    /// Copy the document path of the cell under the cursor, so a value can be referred
+    /// to elsewhere — in a bug report, a script, a `jq` expression.
+    pub(super) fn copy_node_path(&mut self) {
+        self.mode = crate::types::AppMode::Normal;
+        let Some(path) = self.cursor_node_path(true) else {
+            self.status_message = "No document path here".to_string();
+            return;
+        };
+        let text = crate::data::doc::path_to_string(&path);
+        let text = if text.is_empty() { "(root)".to_string() } else { text };
+        match crate::clipboard::copy_text(&text) {
+            Ok(()) => self.status_message = format!("Copied path: {}", text),
+            Err(e) => self.status_message = format!("Copy failed: {}", e),
         }
     }
 

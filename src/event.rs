@@ -484,6 +484,7 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
         // Y-prefix copy mode
         AppMode::YPrefix => match key.code {
             KeyCode::Char('c') => Action::CopyCurrentCell,
+            KeyCode::Char('p') => Action::CopyNodePath,
             KeyCode::Char('r') => Action::OpenCopyFormat(crate::types::CopyPending::SmartRows),
             KeyCode::Char('z') => Action::OpenCopyFormat(crate::types::CopyPending::SmartColumn),
             KeyCode::Char('Z') => Action::OpenCopyFormat(crate::types::CopyPending::WholeColumn),
