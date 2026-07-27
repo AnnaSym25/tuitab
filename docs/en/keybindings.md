@@ -165,6 +165,7 @@ all still defaults to CSV, and is only re-read as JSON when it starts with `[` o
 | `zEnter` | Dive into the node of the current cell |
 | `yp` | Copy the document path of the current cell (`servers[1].host`) |
 | `q` / `Esc` | Go back up one level |
+| `g/` | Search the whole document — see below |
 | `m` | Cycle the layout: records / key-value / scalars |
 | `(` | Expand the cursor column of containers into `parent.key` / `parent[0]` columns |
 | `)` | Fold the innermost expansion back into one column |
@@ -172,6 +173,14 @@ all still defaults to CSV, and is only re-read as JSON when it starts with `[` o
 | `E` | Edit a container as text in `$EDITOR` (add, remove or reorder keys) |
 | `d` | Delete the selected rows — removes them from the document |
 | `Ctrl+S` | Save; a different extension converts the format |
+
+`/` searches what is on screen, which on a document sheet is one subtree rendered into
+cells — it cannot see a key three levels down. `g/` searches the tree itself and pushes a
+sheet of hits: one row per match, with its path, the value there, and whether the pattern
+matched the key or the value. `Enter` on a hit opens the node — a container as itself, a
+scalar's parent so the value is seen in context — with the cursor on the match. Nothing
+is opened automatically. The pattern is a case-insensitive regex, and the list stops at
+2000 hits, which the status line says.
 
 When there is nothing more urgent to report, the status line shows the document path of
 the cell under the cursor — `servers[1].host` — which is what you need to refer to a

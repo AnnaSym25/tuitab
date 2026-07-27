@@ -74,7 +74,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         | AppMode::SelectRandomInput
         | AppMode::DedupTiebreakerSelect
         | AppMode::SaveShapeSelect
-        | AppMode::OpenAsSelect => {
+        | AppMode::OpenAsSelect
+        | AppMode::DocSearching => {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -86,7 +87,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             table_view::render(frame, app, chunks[0]);
             status_bar::render(frame, app, chunks[1]);
 
-            if app.mode == AppMode::Searching {
+            if app.mode == AppMode::Searching || app.mode == AppMode::DocSearching {
                 search_bar::render(frame, app);
             }
             if app.mode == AppMode::SelectByRegex {

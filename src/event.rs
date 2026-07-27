@@ -292,6 +292,7 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
         // g-prefix modifier
         AppMode::GPrefix => match key.code {
             KeyCode::Char('g') => Action::GoTop,           // gg → go to top
+            KeyCode::Char('/') => Action::StartDocSearch,  // g/ → search the whole document
             KeyCode::Char('s') => Action::SelectAllRows,   // gs → select all
             KeyCode::Char('u') => Action::UnselectAllRows, // gu → unselect all
             KeyCode::Char('t') => Action::ToggleAllSelection, // gt → toggle all selection
@@ -306,6 +307,19 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
         },
 
         // z-prefix modifier
+        AppMode::DocSearching => match key.code {
+            KeyCode::Esc => Action::CancelDocSearch,
+            KeyCode::Enter => Action::ApplyDocSearch,
+            KeyCode::Backspace => Action::SearchBackspace,
+            KeyCode::Delete => Action::SearchForwardDelete,
+            KeyCode::Left => Action::SearchCursorLeft,
+            KeyCode::Right => Action::SearchCursorRight,
+            KeyCode::Home => Action::SearchCursorStart,
+            KeyCode::End => Action::SearchCursorEnd,
+            KeyCode::Char(c) => Action::SearchInput(c),
+            _ => Action::None,
+        },
+
         AppMode::SaveShapeSelect => match key.code {
             KeyCode::Up | KeyCode::Char('k') => Action::ChoiceUp,
             KeyCode::Down | KeyCode::Char('j') => Action::ChoiceDown,

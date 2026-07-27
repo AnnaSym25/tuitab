@@ -49,6 +49,24 @@ impl DocState {
         ))
     }
 
+    /// Build a sheet anchored anywhere in a document you already hold a handle to.
+    /// Used to jump straight to a search hit, where there is no parent sheet to dive
+    /// from — only the tree and a path.
+    pub fn open_at(
+        doc: Arc<RwLock<Doc>>,
+        anchor: NodePath,
+    ) -> Result<(DataFrame, DocState)> {
+        let view = {
+            let guard = doc.read().map_err(|_| eyre!("document lock poisoned"))?;
+            let node = guard
+                .root
+                .get(&anchor)
+                .ok_or_else(|| eyre!("that node is gone"))?;
+            View::auto(anchor, node)
+        };
+        DocState::build(doc, view)
+    }
+
     /// Open a child sheet anchored at `anchor`, sharing this document.
     pub fn dive(&self, anchor: NodePath) -> Result<(DataFrame, DocState)> {
         let view = {

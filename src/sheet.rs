@@ -21,6 +21,14 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
+/// A document search result sheet: the tree it came from, and the node each row points
+/// at.  This is deliberately not a [`crate::data::view::View`] — the rows are hits
+/// scattered across the document, not a projection of one subtree.
+pub struct DocHits {
+    pub doc: std::sync::Arc<std::sync::RwLock<crate::data::doc::Doc>>,
+    pub paths: Vec<crate::data::doc::NodePath>,
+}
+
 /// One undo entry: the table, plus the document root when the sheet is doc-backed.
 pub struct UndoState {
     pub dataframe: DataFrame,
@@ -36,6 +44,8 @@ pub struct Sheet {
     /// Document tree behind this sheet, for JSON/JSONL/YAML/TOML sources.  Sheets in a
     /// dive chain share one tree, so an edit made deep down is visible when popping back.
     pub doc: Option<DocState>,
+    /// Set on a document-search result sheet; `Enter` uses it to jump to the hit.
+    pub doc_hits: Option<DocHits>,
     /// Stack of previous states for Undo.  Doc-backed sheets snapshot the tree alongside
     /// the table — undoing only the table would leave the two disagreeing.
     pub undo_stack: Vec<UndoState>,
@@ -118,6 +128,7 @@ impl Sheet {
             title,
             dataframe,
             doc: None,
+            doc_hits: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             table_state: TableState::default()

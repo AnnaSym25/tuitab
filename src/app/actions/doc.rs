@@ -5,7 +5,13 @@
 //! through the existing `$EDITOR` integration in [`crate::app`], which is doc-aware.
 
 use crate::app::App;
-use crate::data::doc::NodePath;
+use crate::data::doc::{NodePath, Seg};
+use crate::types::AppMode;
+
+/// Upper bound on collected matches.  A pattern like `.` on a big document would
+/// otherwise build a sheet nobody can read and take a while doing it; the status line
+/// says when the list was cut rather than implying it is complete.
+const DOC_SEARCH_LIMIT: usize = 2000;
 
 impl App {
     /// Physical row index under the cursor, or `None` when the sheet is empty.
@@ -106,6 +112,136 @@ impl App {
         }
     }
 
+    /// Start typing a pattern to search the whole document (`g/`).
+    ///
+    /// The plain `/` searches what is on screen, which on a document sheet is one
+    /// subtree rendered into cells — it cannot find a key three levels down.
+    pub(crate) fn start_doc_search(&mut self) {
+        if self.stack.active().doc.is_none() {
+            self.mode = AppMode::Normal;
+            self.status_message = "Document search needs a JSON/YAML/TOML sheet".to_string();
+            return;
+        }
+        self.stack.active_mut().search_input.clear();
+        self.mode = AppMode::DocSearching;
+        self.status_message.clear();
+    }
+
+    /// Run the search and push a sheet of hits: one row per match, showing where it is
+    /// and what is there.  Nothing is opened automatically — the user picks.
+    pub(crate) fn apply_doc_search(&mut self) {
+        self.mode = AppMode::Normal;
+        let pattern = self.stack.active().search_input.as_str().to_string();
+        if pattern.is_empty() {
+            return;
+        }
+        let re = match regex::RegexBuilder::new(&pattern)
+            .case_insensitive(true)
+            .build()
+        {
+            Ok(re) => re,
+            Err(e) => {
+                self.status_message = format!("Bad pattern: {}", e);
+                return;
+            }
+        };
+
+        let Some(doc) = self.stack.active().doc.as_ref() else {
+            return;
+        };
+        let handle = std::sync::Arc::clone(&doc.doc);
+        let (hits, truncated) = {
+            let Ok(guard) = handle.read() else {
+                self.status_message = "Document lock poisoned".to_string();
+                return;
+            };
+            let hits = crate::data::doc::search(&guard.root, &re, DOC_SEARCH_LIMIT);
+            let truncated = hits.len() >= DOC_SEARCH_LIMIT;
+            let rows: Vec<(String, String, String, String)> = hits
+                .iter()
+                .map(|h| {
+                    let node = guard.root.get(&h.path);
+                    (
+                        crate::data::doc::path_to_string(&h.path),
+                        node.map(|n| n.render_compact(200)).unwrap_or_default(),
+                        node.map(|n| n.type_name().to_string()).unwrap_or_default(),
+                        if h.in_key { "key" } else { "value" }.to_string(),
+                    )
+                })
+                .collect();
+            ((hits, rows), truncated)
+        };
+        let (hits, rows) = hits;
+
+        if rows.is_empty() {
+            self.status_message = format!("No match for `{}` in the document", pattern);
+            return;
+        }
+
+        let df = match hits_dataframe(&rows) {
+            Ok(df) => df,
+            Err(e) => {
+                self.status_message = format!("Search failed: {}", e);
+                return;
+            }
+        };
+        let n = rows.len();
+        let root_name = root_name(&self.stack.active().title);
+        let mut sheet = crate::sheet::Sheet::new(format!("{} › /{}", root_name, pattern), df);
+        sheet.source_path = self.stack.active().source_path.clone();
+        sheet.doc_hits = Some(crate::sheet::DocHits {
+            doc: handle,
+            paths: hits.into_iter().map(|h| h.path).collect(),
+        });
+        self.stack.push(sheet);
+        self.status_message = if truncated {
+            format!("{} matches (stopped at the first {})", n, DOC_SEARCH_LIMIT)
+        } else {
+            format!("{} matches", n)
+        };
+    }
+
+    /// Open the node a search hit points at.  A container opens as itself; a scalar
+    /// opens its parent so the value is seen in context.
+    pub(crate) fn open_search_hit(&mut self) {
+        let Some(row) = self.cursor_physical_row() else {
+            return;
+        };
+        let s = self.stack.active();
+        let Some(hits) = s.doc_hits.as_ref() else { return };
+        let Some(path) = hits.paths.get(row).cloned() else {
+            return;
+        };
+        let handle = std::sync::Arc::clone(&hits.doc);
+        let source = s.source_path.clone();
+        let root_name = root_name(&s.title);
+
+        let (anchor, cursor_key) = {
+            let Ok(guard) = handle.read() else { return };
+            match guard.root.get(&path) {
+                Some(n) if n.is_container() => (path.clone(), None),
+                _ => {
+                    let mut parent = path.clone();
+                    let last = parent.pop();
+                    (parent, last)
+                }
+            }
+        };
+
+        match crate::data::io::doc_io::DocState::open_at(handle, anchor) {
+            Ok((df, state)) => {
+                let title = state.breadcrumbs(&root_name);
+                let mut sheet = crate::sheet::Sheet::new(title, df);
+                sheet.source_path = source;
+                sheet.doc = Some(state);
+                place_cursor(&mut sheet, cursor_key.as_ref());
+                self.stack.push(sheet);
+                self.status_message.clear();
+            }
+            Err(e) => self.status_message = e.to_string(),
+        }
+    }
+
     /// Expand the cursor column of containers into one column per child (`(`).
     pub(crate) fn expand_column(&mut self) {
         self.reshape_columns(true);
@@ -144,6 +280,54 @@ impl App {
             Err(e) => self.status_message = e.to_string(),
         }
     }
+}
+
+/// Put the cursor on the row (or key) the hit named, so the match is under the cursor
+/// rather than merely somewhere on the sheet.
+fn place_cursor(sheet: &mut crate::sheet::Sheet, seg: Option<&Seg>) {
+    let Some(doc) = sheet.doc.as_ref() else { return };
+    let Some(seg) = seg else { return };
+    match seg {
+        Seg::Idx(i) => {
+            if let Some(d) = sheet.dataframe.row_order.iter().position(|p| p == i) {
+                sheet.table_state.select(Some(d));
+            }
+        }
+        Seg::Key(k) => {
+            // records: the key is a column; key/value: the key is a row
+            if let Some(col) = sheet.dataframe.columns.iter().position(|c| &c.name == k) {
+                sheet.cursor_col = col;
+                sheet.table_state.select_column(Some(col));
+            } else if let Some(row) = doc
+                .row_paths
+                .iter()
+                .position(|p| matches!(p.last(), Some(Seg::Key(rk)) if rk == k))
+            {
+                if let Some(d) = sheet.dataframe.row_order.iter().position(|p| *p == row) {
+                    sheet.table_state.select(Some(d));
+                }
+            }
+        }
+    }
+}
+
+fn hits_dataframe(
+    rows: &[(String, String, String, String)],
+) -> color_eyre::Result<crate::data::dataframe::DataFrame> {
+    use polars::prelude::*;
+    let col = |f: fn(&(String, String, String, String)) -> &String, name: &str| {
+        Column::new(name.into(), rows.iter().map(f).cloned().collect::<Vec<String>>())
+    };
+    let df = polars::prelude::DataFrame::new(
+        rows.len(),
+        vec![
+            col(|r| &r.0, "path"),
+            col(|r| &r.1, "value"),
+            col(|r| &r.2, "type"),
+            col(|r| &r.3, "matched"),
+        ],
+    )?;
+    crate::data::io::wrap_polars_df(df)
 }
 
 fn mode_name(m: crate::data::view::ViewMode) -> &'static str {

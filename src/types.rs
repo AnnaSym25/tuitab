@@ -82,6 +82,8 @@ pub enum AppMode {
     SaveShapeSelect,
     /// Choosing which format to reopen the selected file as (zo on a directory sheet)
     OpenAsSelect,
+    /// Typing a pattern to search the whole document, not just the visible projection
+    DocSearching,
 }
 
 /// Distinguishes a regular data sheet from derived views.
@@ -239,6 +241,10 @@ pub enum Action {
     ExpandColumn,
     /// Copy the document path of the cell under the cursor (`yp`)
     CopyNodePath,
+    /// Search the whole document tree, not just the rows on screen (`g/`)
+    StartDocSearch,
+    ApplyDocSearch,
+    CancelDocSearch,
     /// Move the highlight in a single-choice popup
     ChoiceUp,
     ChoiceDown,

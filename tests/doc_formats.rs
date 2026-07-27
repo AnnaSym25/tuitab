@@ -1075,3 +1075,98 @@ fn deleting_from_a_scalar_view_removes_the_element() {
     assert!(!text.contains("20"), "{}", text);
     assert!(text.contains("10") && text.contains("30"), "{}", text);
 }
+
+/// `g/` searches the whole tree, not the rows on screen, and reports hits as a sheet
+/// the user can look through — nothing is opened behind their back.
+#[test]
+fn document_search_finds_nodes_that_are_not_on_screen() {
+    use tuitab::types::{Action, AppMode};
+
+    let path = out("deep-search.json");
+    std::fs::write(
+        &path,
+        r#"[{"id":1,"meta":{"owner":"alice","tags":["x"]}},
+            {"id":2,"meta":{"owner":"bob","tags":["alice-backup"]}}]"#,
+    )
+    .unwrap();
+    let mut app = tuitab::app::App::new(&path, None).unwrap();
+
+    // `alice` appears only inside nested containers, never as a cell of the top view
+    app.handle_action(Action::StartDocSearch);
+    assert_eq!(app.mode, AppMode::DocSearching);
+    for c in "alice".chars() {
+        app.handle_action(Action::SearchInput(c));
+    }
+    app.handle_action(Action::ApplyDocSearch);
+    assert_eq!(app.mode, AppMode::Normal);
+
+    let s = app.stack.active();
+    assert!(s.doc_hits.is_some(), "a results sheet was pushed");
+    let names: Vec<&str> = s.dataframe.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["path", "value", "type", "matched"]);
+    assert_eq!(s.dataframe.visible_row_count(), 2, "the owner and the tag");
+    let paths: Vec<String> = (0..2).map(|r| s.dataframe.get_physical(r, 0)).collect();
+    assert!(paths.contains(&"[0].meta.owner".to_string()), "{:?}", paths);
+    assert!(paths.contains(&"[1].meta.tags[0]".to_string()), "{:?}", paths);
+
+    // Enter on a hit opens the node's parent, with the cursor on the match
+    app.stack.active_mut().table_state.select(Some(
+        paths.iter().position(|p| p == "[0].meta.owner").unwrap(),
+    ));
+    app.handle_action(Action::OpenRow);
+    let s = app.stack.active();
+    assert!(s.doc.is_some(), "landed on a document sheet");
+    assert!(
+        s.title.ends_with("[0] › meta"),
+        "opened the containing node: {}",
+        s.title
+    );
+
+    assert_eq!(
+        s.doc.as_ref().unwrap().view.anchor,
+        vec![Seg::Idx(0), Seg::Key("meta".into())]
+    );
+    // the cursor is on the match, not merely somewhere on the sheet
+    let cursor_row = s.table_state.selected().unwrap();
+    assert_eq!(
+        s.dataframe.get_physical(s.dataframe.row_order[cursor_row], 0),
+        "owner"
+    );
+}
+
+/// Searching for a key name finds the key, and says that is what matched.
+#[test]
+fn document_search_matches_key_names_too() {
+    use tuitab::types::Action;
+
+    let path = out("key-search.toml");
+    std::fs::write(&path, "[db]\nhostname = \"h\"\n[cache]\nhost = \"c\"\n").unwrap();
+    let mut app = tuitab::app::App::new(&path, None).unwrap();
+
+    app.handle_action(Action::StartDocSearch);
+    for c in "^host".chars() {
+        app.handle_action(Action::SearchInput(c));
+    }
+    app.handle_action(Action::ApplyDocSearch);
+
+    let s = app.stack.active();
+    assert_eq!(s.dataframe.visible_row_count(), 2, "hostname and host");
+    let matched: Vec<String> = (0..2).map(|r| s.dataframe.get_physical(r, 3)).collect();
+    assert!(matched.iter().all(|m| m == "key"), "{:?}", matched);
+}
+
+/// A pattern with no match says so instead of pushing an empty sheet.
+#[test]
+fn document_search_with_no_match_pushes_nothing() {
+    use tuitab::types::Action;
+
+    let mut app = tuitab::app::App::new(&fixture("nested.json"), None).unwrap();
+    let depth = app.stack.depth();
+    app.handle_action(Action::StartDocSearch);
+    for c in "zzzznope".chars() {
+        app.handle_action(Action::SearchInput(c));
+    }
+    app.handle_action(Action::ApplyDocSearch);
+    assert_eq!(app.stack.depth(), depth, "no sheet for no results");
+    assert!(app.status_message.contains("No match"), "{}", app.status_message);
+}

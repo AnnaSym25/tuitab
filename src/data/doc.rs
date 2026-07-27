@@ -97,6 +97,64 @@ pub fn sniff(text: &str, bracket_only: bool) -> Option<Format> {
     None
 }
 
+/// One hit from a document-wide search.
+pub struct Hit {
+    pub path: NodePath,
+    /// What matched: the key naming this node, or the value in it.
+    pub in_key: bool,
+}
+
+/// Walk the whole tree and collect every node whose key or scalar value matches.
+///
+/// Containers are matched on their key only — matching them on their rendered contents
+/// would report every ancestor of every hit, which buries the hit itself.  Stops at
+/// `limit` so a pattern like `.` on a large document cannot lock the UI up; the caller
+/// says so rather than pretending the list is complete.
+pub fn search(root: &Node, re: &regex::Regex, limit: usize) -> Vec<Hit> {
+    let mut out = Vec::new();
+    walk(root, &mut Vec::new(), re, limit, &mut out);
+    out
+}
+
+fn walk(node: &Node, path: &mut NodePath, re: &regex::Regex, limit: usize, out: &mut Vec<Hit>) {
+    if out.len() >= limit {
+        return;
+    }
+    match node {
+        Node::Obj(map) => {
+            for (k, v) in map {
+                if out.len() >= limit {
+                    return;
+                }
+                path.push(Seg::Key(k.clone()));
+                if re.is_match(k) {
+                    out.push(Hit {
+                        path: path.clone(),
+                        in_key: true,
+                    });
+                }
+                walk(v, path, re, limit, out);
+                path.pop();
+            }
+        }
+        Node::Arr(items) => {
+            for (i, v) in items.iter().enumerate() {
+                path.push(Seg::Idx(i));
+                walk(v, path, re, limit, out);
+                path.pop();
+            }
+        }
+        scalar => {
+            if re.is_match(&scalar.to_cell_string()) {
+                out.push(Hit {
+                    path: path.clone(),
+                    in_key: false,
+                });
+            }
+        }
+    }
+}
+
 /// One node of the document tree.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {

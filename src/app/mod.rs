@@ -604,6 +604,8 @@ impl App {
                     self.open_duckdb_table_row();
                 } else if is_xlsx {
                     self.open_excel_sheet_row();
+                } else if s.doc_hits.is_some() {
+                    self.open_search_hit();
                 } else if s.doc.is_some() {
                     self.dive_into_node(false);
                 } else {
@@ -619,6 +621,12 @@ impl App {
                 }
             }
             Action::CycleViewMode => self.cycle_view_mode(),
+            Action::StartDocSearch => self.start_doc_search(),
+            Action::ApplyDocSearch => self.apply_doc_search(),
+            Action::CancelDocSearch => {
+                self.mode = AppMode::Normal;
+                self.stack.active_mut().search_input.clear();
+            }
             Action::ExpandColumn => self.expand_column(),
             Action::ContractColumn => self.contract_column(),
             Action::ResetSort => {

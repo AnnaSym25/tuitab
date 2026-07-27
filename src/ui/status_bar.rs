@@ -44,6 +44,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         AppMode::InsertingColumn => " INSERT ",
         AppMode::ConfirmQuit => " CONFIRM",
         AppMode::SaveShapeSelect => " SHAPE  ",
+        AppMode::DocSearching => " DOC /  ",
         AppMode::OpenAsSelect => " OPEN AS",
         AppMode::YPrefix => " COPY    ",
         AppMode::CopyFormatSelect => " COPY-FMT",
