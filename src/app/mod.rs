@@ -139,6 +139,16 @@ impl App {
     /// thread so the UI can display a spinner while data is streamed in.
     /// `delimiter` overrides auto-detection for CSV/TSV files.
     pub fn new(path: &Path, delimiter: Option<char>) -> Result<Self> {
+        App::new_as(path, delimiter, None)
+    }
+
+    /// Open `path`, optionally forcing a structured format instead of trusting the
+    /// extension — this is what `--type yaml deploy.conf` does.
+    pub fn new_as(
+        path: &Path,
+        delimiter: Option<char>,
+        forced_format: Option<crate::data::doc::Format>,
+    ) -> Result<Self> {
         let delim_byte = delimiter.map(|c| c as u8);
 
         let filename = path
@@ -192,20 +202,26 @@ impl App {
                 .to_lowercase();
 
             // For multi-sheet xlsx: load sheet overview instead of first sheet
-            let (dataframe, xlsx_db) = if matches!(ext.as_str(), "xlsx" | "xls" | "xlsm" | "xlsb") {
+            let (dataframe, doc, xlsx_db) = if matches!(ext.as_str(), "xlsx" | "xls" | "xlsm" | "xlsb")
+            {
                 match crate::data::io::excel_sheet_names(path) {
                     Ok(names) if names.len() > 1 => {
                         let df = crate::data::io::load_excel_overview(path)?;
-                        (df, Some(path.to_path_buf()))
+                        (df, None, Some(path.to_path_buf()))
                     }
-                    _ => (crate::data::io::load_file(path, delim_byte)?, None),
+                    _ => {
+                        let (df, doc) = crate::data::io::load_file_with_doc(path, delim_byte)?;
+                        (df, doc, None)
+                    }
                 }
             } else {
-                (crate::data::io::load_file(path, delim_byte)?, None)
+                let (df, doc) = crate::data::io::load_file_as(path, delim_byte, forced_format)?;
+                (df, doc, None)
             };
 
             let row_count = dataframe.visible_row_count();
             let mut root_sheet = Sheet::new(filename.clone(), dataframe);
+            root_sheet.doc = doc;
             if matches!(ext.as_str(), "sqlite" | "sqlite3") {
                 root_sheet.sqlite_db_path = Some(path.to_path_buf());
             } else if matches!(ext.as_str(), "duckdb" | "ddb") {
@@ -241,14 +257,18 @@ impl App {
 
     /// Construct `App` by reading typed data from stdin.
     ///
-    /// `data_type` must be one of `"csv"`, `"json"`, or `"parquet"`.
+    /// `data_type` is `"csv"`, `"tsv"`, `"txt"`, or one of the structured formats
+    /// (`"json"`, `"jsonl"`, `"ndjson"`, `"yaml"`, `"toml"`), which arrive with a
+    /// document tree attached and are therefore editable and convertible.
     /// `delimiter` overrides auto-detection for CSV/TSV input.
     pub fn from_stdin_typed(data_type: &str, delimiter: Option<char>) -> Result<Self> {
         let delim_byte = delimiter.map(|c| c as u8);
-        let dataframe = crate::data::io::load_from_stdin_typed(data_type, delim_byte)?;
+        let (dataframe, doc) =
+            crate::data::io::load_from_stdin_with_doc(data_type, delim_byte)?;
         let row_count = dataframe.visible_row_count();
         let title = "stdin".to_string();
-        let root_sheet = Sheet::new(title.clone(), dataframe);
+        let mut root_sheet = Sheet::new(title.clone(), dataframe);
+        root_sheet.doc = doc;
         Ok(Self::init(
             SheetStack::new(root_sheet),
             AppMode::Normal,
@@ -373,6 +393,20 @@ impl App {
             return;
         };
 
+        // Reloading a dived-into sheet would give it a fresh tree while its parents keep
+        // the old one, and the two would silently diverge.  Pop back to the root first.
+        if self
+            .stack
+            .active()
+            .doc
+            .as_ref()
+            .is_some_and(|d| !d.view.anchor.is_empty())
+        {
+            self.status_message =
+                "Cannot reload inside a node — go back to the top sheet first".to_string();
+            return;
+        }
+
         let meta = std::fs::metadata(&path);
         let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
         let file_size = meta.map(|m| m.len()).unwrap_or(0);
@@ -417,11 +451,15 @@ impl App {
             self.mode = AppMode::Loading;
             self.status_message = "Reloading...".to_string();
         } else {
-            match crate::data::io::load_file(&path, source_delimiter) {
-                Ok(df) => {
+            match crate::data::io::load_file_with_doc(&path, source_delimiter) {
+                Ok((df, doc)) => {
                     let row_count = df.visible_row_count();
                     let s = self.stack.active_mut();
                     s.dataframe = df;
+                    // The tree must be replaced too: keeping the old one would leave
+                    // row paths pointing into a document that no longer matches the
+                    // table, and a later save would write the pre-reload contents.
+                    s.doc = doc;
                     s.dataframe.calc_widths(40, 1000);
                     let vis = s.dataframe.visible_row_count();
                     s.scroll_state = ScrollbarState::new(vis.saturating_sub(1));
@@ -565,11 +603,21 @@ impl App {
                     self.open_duckdb_table_row();
                 } else if is_xlsx {
                     self.open_excel_sheet_row();
+                } else if s.doc.is_some() {
+                    self.dive_into_node(false);
                 } else {
                     // FEATURE F5: Transpose row on Enter if not special sheet
                     self.transpose_row();
                 }
             }
+            Action::OpenCell => {
+                if self.stack.active().doc.is_some() {
+                    self.dive_into_node(true);
+                } else {
+                    self.status_message = "Not a JSON/YAML/TOML sheet".to_string();
+                }
+            }
+            Action::CycleViewMode => self.cycle_view_mode(),
             Action::ResetSort => {
                 let s = self.stack.active_mut();
                 s.push_undo();
@@ -914,6 +962,7 @@ impl App {
     fn pop_sheet(&mut self) {
         if self.stack.can_pop() {
             self.stack.pop();
+            self.refresh_doc_projection();
             if self.chart.drill_return {
                 self.chart.drill_return = false;
                 self.mode = AppMode::Chart;
@@ -1543,11 +1592,14 @@ impl App {
                     .and_then(|e| e.to_str())
                     .unwrap_or("")
                     .to_lowercase();
-                // Returns (df, sqlite_db_path, duckdb_db_path, xlsx_db_path)
+                // Returns (df, doc, sqlite_db_path, duckdb_db_path, xlsx_db_path).
+                // Structured files must keep their document tree here too: without it a
+                // save from a drilled-into sheet would rewrite the file as a flat table.
                 #[allow(clippy::type_complexity)]
                 let load_result: Result<
                     (
                         crate::data::dataframe::DataFrame,
+                        Option<crate::data::io::doc_io::DocState>,
                         Option<std::path::PathBuf>,
                         Option<std::path::PathBuf>,
                         Option<std::path::PathBuf>,
@@ -1555,34 +1607,36 @@ impl App {
                     _,
                 > = if target_ext == "db" {
                     match crate::data::io::load_sqlite_overview(&target_path) {
-                        Ok(df) => Ok((df, Some(target_path.clone()), None, None)),
+                        Ok(df) => Ok((df, None, Some(target_path.clone()), None, None)),
                         Err(_) => crate::data::io::load_duckdb_overview(&target_path)
-                            .map(|df| (df, None, Some(target_path.clone()), None)),
+                            .map(|df| (df, None, None, Some(target_path.clone()), None)),
                     }
                 } else if matches!(target_ext.as_str(), "sqlite" | "sqlite3") {
                     crate::data::io::load_sqlite_overview(&target_path)
-                        .map(|df| (df, Some(target_path.clone()), None, None))
+                        .map(|df| (df, None, Some(target_path.clone()), None, None))
                 } else if matches!(target_ext.as_str(), "duckdb" | "ddb") {
                     crate::data::io::load_duckdb_overview(&target_path)
-                        .map(|df| (df, None, Some(target_path.clone()), None))
+                        .map(|df| (df, None, None, Some(target_path.clone()), None))
                 } else if matches!(target_ext.as_str(), "xlsx" | "xls" | "xlsm" | "xlsb") {
                     match crate::data::io::excel_sheet_names(&target_path) {
                         Ok(names) if names.len() > 1 => {
                             crate::data::io::load_excel_overview(&target_path)
-                                .map(|df| (df, None, None, Some(target_path.clone())))
+                                .map(|df| (df, None, None, None, Some(target_path.clone())))
                         }
-                        _ => crate::data::io::load_file(&target_path, None)
-                            .map(|df| (df, None, None, None)),
+                        _ => crate::data::io::load_file_with_doc(&target_path, None)
+                            .map(|(df, doc)| (df, doc, None, None, None)),
                     }
                 } else {
-                    crate::data::io::load_file(&target_path, None).map(|df| (df, None, None, None))
+                    crate::data::io::load_file_with_doc(&target_path, None)
+                        .map(|(df, doc)| (df, doc, None, None, None))
                 };
                 match load_result {
-                    Ok((new_df, sqlite_path, duckdb_path, xlsx_path)) => {
+                    Ok((new_df, doc, sqlite_path, duckdb_path, xlsx_path)) => {
                         let mut new_sheet = crate::sheet::Sheet::new(
                             target_path.to_string_lossy().into_owned(),
                             new_df,
                         );
+                        new_sheet.doc = doc;
                         new_sheet.sqlite_db_path = sqlite_path;
                         new_sheet.duckdb_db_path = duckdb_path;
                         new_sheet.xlsx_db_path = xlsx_path;
@@ -1753,8 +1807,9 @@ impl App {
             };
             if let Ok(read_dir) = std::fs::read_dir(&dir) {
                 let supported_exts = [
-                    "csv", "tsv", "json", "parquet", "xlsx", "xls", "xlsm", "xlsb", "sqlite",
-                    "sqlite3", "db", "duckdb", "ddb", "txt",
+                    "csv", "tsv", "json", "jsonl", "ndjson", "ldjson", "yaml", "yml", "toml",
+                    "parquet", "xlsx", "xls", "xlsm", "xlsb", "sqlite", "sqlite3", "db", "duckdb",
+                    "ddb", "txt",
                 ];
                 let mut paths: Vec<std::path::PathBuf> = read_dir
                     .filter_map(|e| e.ok())
@@ -2552,10 +2607,43 @@ impl App {
             return Ok(());
         }
         let physical_row = s.dataframe.row_order[display_row];
-        let current_value = s.dataframe.get_physical(physical_row, col);
 
-        // Write cell value to a temp file
-        let mut tmp = tempfile::Builder::new().suffix(".txt").tempfile()?;
+        // On a doc-backed sheet the table cell is only a rendering.  Containers are
+        // edited as their real serialised subtree — editing the `{2} a=1 b=2` summary as
+        // a string would write that summary back into the document as a string.
+        let (current_value, suffix, node_path) = match s.doc.as_ref() {
+            Some(doc) => match doc.path_of(physical_row, col) {
+                Some(path) => {
+                    let is_container = doc
+                        .node_at(physical_row, col)
+                        .map(|n| n.is_container())
+                        .unwrap_or(false);
+                    if is_container {
+                        let text = doc.node_text(&path).unwrap_or_default();
+                        (text, format!(".{}", doc.format().name()), Some(path))
+                    } else {
+                        (
+                            s.dataframe.get_physical(physical_row, col),
+                            ".txt".to_string(),
+                            None,
+                        )
+                    }
+                }
+                None => (
+                    s.dataframe.get_physical(physical_row, col),
+                    ".txt".to_string(),
+                    None,
+                ),
+            },
+            None => (
+                s.dataframe.get_physical(physical_row, col),
+                ".txt".to_string(),
+                None,
+            ),
+        };
+
+        // Write the value to a temp file
+        let mut tmp = tempfile::Builder::new().suffix(&suffix).tempfile()?;
         tmp.write_all(current_value.as_bytes())?;
         tmp.flush()?;
         let tmp_path = tmp.path().to_path_buf();
@@ -2582,19 +2670,12 @@ impl App {
                 // Strip a single trailing newline that editors append
                 let new_value = new_content.trim_end_matches(['\n', '\r']).to_string();
 
-                if new_value != current_value {
-                    let s = self.stack.active_mut();
-                    s.push_undo();
-                    match s.dataframe.set_cell(physical_row, col, new_value.clone()) {
-                        Ok(()) => {
-                            self.status_message = "Cell updated from editor".to_string();
-                        }
-                        Err(e) => {
-                            self.status_message = format!("Cell update failed: {}", e);
-                        }
-                    }
-                } else {
+                if new_value == current_value {
                     self.status_message = "No changes".to_string();
+                } else if let Some(path) = node_path {
+                    self.apply_node_from_editor(&path, &new_value, &tmp_path);
+                } else {
+                    self.apply_cell_from_editor(physical_row, col, new_value);
                 }
             }
             Ok(_) => {
@@ -2606,6 +2687,61 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// Apply a scalar edited in `$EDITOR`, routing through the document tree when the
+    /// sheet has one so the value keeps its type.
+    fn apply_cell_from_editor(&mut self, physical_row: usize, col: usize, new_value: String) {
+        let s = self.stack.active_mut();
+        s.push_undo();
+
+        let mut value = new_value;
+        if let Some(doc) = s.doc.as_mut() {
+            match doc.set_cell(physical_row, col, &value) {
+                Ok(shown) => value = shown,
+                Err(e) => {
+                    s.undo_stack.pop();
+                    self.status_message = format!("Cell update failed: {}", e);
+                    return;
+                }
+            }
+        }
+        match s.dataframe.set_cell(physical_row, col, value) {
+            Ok(()) => self.status_message = "Cell updated from editor".to_string(),
+            Err(e) => self.status_message = format!("Cell update failed: {}", e),
+        }
+    }
+
+    /// Replace a whole subtree with text edited in `$EDITOR`.  If it does not parse,
+    /// nothing is written and the temp file is kept and named in the status line — a
+    /// rejected edit must never silently discard what the user typed.
+    fn apply_node_from_editor(
+        &mut self,
+        path: &[crate::data::doc::Seg],
+        text: &str,
+        tmp_path: &Path,
+    ) {
+        let s = self.stack.active_mut();
+        s.push_undo();
+        let Some(doc) = s.doc.as_mut() else { return };
+
+        if let Err(e) = doc.set_node_text(path, text) {
+            s.undo_stack.pop();
+            let kept = keep_failed_edit(tmp_path);
+            self.status_message = match kept {
+                Some(p) => format!("Parse error: {} — your text is kept in {}", e, p.display()),
+                None => format!("Parse error: {}", e),
+            };
+            return;
+        }
+        match doc.reproject() {
+            Ok(df) => {
+                s.dataframe = df;
+                s.reset_view_state();
+                self.status_message = "Node updated from editor".to_string();
+            }
+            Err(e) => self.status_message = format!("Reprojection failed: {}", e),
+        }
     }
 
     // ── Z Prefix (Column Operations) ──────────────────────────────────────────
@@ -2765,6 +2901,18 @@ impl App {
             self.join.path_input = crate::ui::text_input::TextInput::with_value(new_value);
         }
     }
+}
+
+/// Copy a rejected `$EDITOR` buffer somewhere stable before the temp file is dropped,
+/// so a parse error never costs the user their typing.  Returns the kept path.
+fn keep_failed_edit(tmp_path: &Path) -> Option<std::path::PathBuf> {
+    let ext = tmp_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("txt");
+    let kept = std::env::temp_dir().join(format!("tuitab-failed-edit.{}", ext));
+    std::fs::copy(tmp_path, &kept).ok()?;
+    Some(kept)
 }
 
 /// Expand a leading `~` to the user's home directory.

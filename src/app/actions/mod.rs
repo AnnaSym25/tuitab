@@ -2,6 +2,7 @@ pub(super) mod aggregator;
 pub(super) mod chart;
 pub(super) mod clipboard;
 pub(super) mod column;
+pub(super) mod doc;
 pub(super) mod edit;
 pub(super) mod expression;
 pub(super) mod io;

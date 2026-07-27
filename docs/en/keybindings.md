@@ -76,12 +76,13 @@ See [Expressions](expressions.md) for the `|!=` filter language.
 | `zr` | Find & replace text in the column |
 | `zg` | Find & replace with a regex |
 | `zx` | Split the column by a delimiter |
+| `zEnter` | Dive into the node in the current cell (JSON/YAML/TOML) |
 
 ## Rows, sheets & analytics
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Transpose the current row into a Column/Value view (drill-down) |
+| `Enter` | Transpose the current row into a Column/Value view (drill-down); on a JSON/YAML/TOML sheet, dive into the row's node |
 | `T` | Transpose the whole table (press again to undo) |
 | `I` | Describe sheet — per-column statistics |
 | `F` | Frequency table for the cursor column |
@@ -91,7 +92,8 @@ See [Expressions](expressions.md) for the `|!=` filter language.
 | `W` | [Pivot table](pivot.md) |
 | `J` | [JOIN](join.md) with another table |
 | `e` | Edit the current cell |
-| `E` | Edit the current cell in `$EDITOR` |
+| `E` | Edit the current cell in `$EDITOR`; on a JSON/YAML/TOML sheet a container cell opens as its real subtree, so keys can be added, removed and reordered |
+| `m` | Cycle how the current node is projected: records / key-value / scalars |
 | `ge` | Bulk-edit — set the same value on every selected row |
 
 ## Clipboard (`y` prefix)
@@ -113,7 +115,7 @@ marked with `zs`.
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+S` | Save / export (CSV, TSV, Parquet, JSON, Excel, or SQLite) |
+| `Ctrl+S` | Save / export / convert (CSV, TSV, Parquet, JSON, JSONL, YAML, TOML, Excel, or SQLite) |
 | `R` | Reload the file from disk |
 | `U` / `Shift+U` | Undo (up to 50 steps) |
 | `Ctrl+R` | Redo |
@@ -141,6 +143,27 @@ save path, …):
 | `↑` / `↓` | Previous / next entry in history (expression & pivot inputs) |
 | `Enter` | Apply |
 | `Esc` | Cancel |
+
+
+## JSON / YAML / TOML sheets
+
+These formats open as a table over the real document, not as a flattened copy.
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Dive into the node of the current row |
+| `zEnter` | Dive into the node of the current cell |
+| `q` / `Esc` | Go back up one level |
+| `m` | Cycle the layout: records / key-value / scalars |
+| `e` | Edit a scalar — the value keeps its type, and a string stays a string |
+| `E` | Edit a container as text in `$EDITOR` (add, remove or reorder keys) |
+| `Ctrl+S` | Save; a different extension converts the format |
+
+Every sheet in a dive chain shares one document, so an edit made three levels down is
+there when you come back up, and `U` undoes it at any level.
+
+Saving re-serialises the document, so nesting, key order and TOML datetimes survive.
+Comments and original formatting do not — they are not part of the parsed document.
 
 ## Keyboard layouts
 

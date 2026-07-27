@@ -9,7 +9,7 @@
 
 **A fast, keyboard-driven terminal explorer for tabular data.**
 
-Open **CSV · JSON · Parquet · Excel · SQLite · DuckDB** straight from your shell —
+Open **CSV · JSON · YAML · TOML · Parquet · Excel · SQLite · DuckDB** straight from your shell —
 filter, sort, pivot, join, compute columns, and chart distributions without
 leaving the terminal.
 
@@ -19,6 +19,8 @@ leaving the terminal.
 
 ```sh
 tuitab data.csv                   # open a file
+tuitab config.toml                # JSON / YAML / TOML open as a browsable tree
+tuitab -t yaml deploy.conf        # force a format when the extension lies
 tuitab orders.csv customers.csv   # browse several files as a list
 cat data.csv | tuitab -t csv      # read from a pipe
 ```
@@ -30,8 +32,13 @@ cat data.csv | tuitab -t csv      # read from a pipe
 
 ## Highlights
 
-- **Six input formats** — CSV/TSV (auto-delimiter), JSON, Parquet, Excel (xlsx/xls),
-  SQLite, DuckDB. Browse a whole directory, or pipe data in over stdin.
+- **Tabular and structured formats** — CSV/TSV (auto-delimiter), JSON, JSONL/NDJSON,
+  YAML, TOML, Parquet, Excel (xlsx/xls), SQLite, DuckDB. Browse a whole directory, or
+  pipe data in over stdin.
+- **Nested data, edited in place** — JSON/YAML/TOML open as a table over the real
+  document: `Enter` dives into a nested object or list, `m` switches between
+  record and key/value layouts, and edits write back into the document, not into a
+  flattened copy. Saving re-serialises the tree, so structure survives.
 - **Vim-style navigation** — `hjkl`, `gg`/`G`, page jumps, sticky pinned columns.
 - **Instant analysis** — per-column statistics, frequency tables, and charts
   (histogram, bar, line, grouped bar) rendered right in the terminal.
@@ -39,8 +46,10 @@ cat data.csv | tuitab -t csv      # read from a pipe
   columns from an expression language.
 - **Clean, fast, type-aware** — Polars-backed engine, Everforest theme, undo/redo,
   currency / percentage / date column types.
-- **Export anywhere** — write back to CSV, TSV, Parquet, JSON, Excel, or SQLite;
-  yank rows to the clipboard as TSV, CSV, JSON, or Markdown.
+- **Export and convert** — write back to CSV, TSV, Parquet, JSON, JSONL, YAML, TOML,
+  Excel, or SQLite. Converting between structured formats is just a different
+  extension: open `config.toml`, save as `config.yaml`. Yank rows to the clipboard as
+  TSV, CSV, JSON, or Markdown.
 
 ---
 
@@ -191,8 +200,8 @@ psql -c "SELECT * FROM orders" --csv | tuitab -t csv
 sqlite3 app.db ".mode csv" ".headers on" "SELECT * FROM users" | tuitab -t csv
 ```
 
-> Stdin accepts `csv`, `tsv`, `txt`, and `json`. For Parquet/Excel/SQLite, open
-> the file directly.
+> Stdin accepts `csv`, `tsv`, `txt`, `json`, `jsonl`, `yaml`, and `toml`. For
+> Parquet/Excel/SQLite, open the file directly.
 
 ---
 
@@ -211,9 +220,11 @@ for every command (column ops, clipboard, dedup, and more).
 | `V` | Chart column | `s` / `u` | Select / unselect row |
 | `I` | Column statistics | `+` / `-` | Add / clear aggregator |
 | `F` | Frequency table | `t` | Set column type |
-| `W` | Pivot table | `Enter` | Transpose row / drill down |
+| `W` | Pivot table | `Enter` | Transpose row / drill down / dive into node |
 | `J` | JOIN with another table | `T` | Transpose table |
-| `Ctrl+S` | Save / export | `U` / `Ctrl+R` | Undo / redo |
+| `m` | Cycle JSON/YAML/TOML layout | `zEnter` | Dive into the node in this cell |
+| `E` | Edit cell (or node) in `$EDITOR` | `Ctrl+S` | Save / export / convert |
+| `U` / `Ctrl+R` | Undo / redo | | |
 | `?` | Help | `q` | Quit / pop sheet |
 
 > Non-QWERTY layouts (ЙЦУКЕН, QWERTZ, AZERTY) are transparently remapped, so the

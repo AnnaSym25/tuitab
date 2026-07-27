@@ -1,0 +1,15 @@
+name = "demo"
+port = 8080
+released = 1979-05-27T07:32:00Z
+
+[db]
+host = "localhost"
+pool = 10
+
+[[servers]]
+host = "a"
+weight = 1
+
+[[servers]]
+host = "b"
+weight = 2

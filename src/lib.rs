@@ -29,7 +29,8 @@ pub struct Cli {
     #[arg(short, long)]
     pub delimiter: Option<char>,
 
-    /// Data format for stdin (e.g. csv, json). Required when reading from stdin.
+    /// Data format (e.g. csv, json, jsonl, yaml, toml). Required when reading from
+    /// stdin; for a file it overrides the extension, so `-t yaml deploy.conf` works.
     #[arg(short = 't', long = "type")]
     pub data_type: Option<String>,
 }
@@ -75,7 +76,13 @@ pub fn run() -> Result<()> {
             eprintln!("Error: '{}': no such file or directory", path.display());
             std::process::exit(1);
         }
-        app::App::new(&path, cli.delimiter)?
+        let forced = cli
+            .data_type
+            .as_deref()
+            .and_then(data::doc::Format::from_name);
+        // `--type` only forces the structured formats; csv/tsv/txt keep falling through
+        // to extension-based loading, which is what they did before.
+        app::App::new_as(&path, cli.delimiter, forced)?
     };
 
     #[cfg(unix)]

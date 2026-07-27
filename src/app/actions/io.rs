@@ -60,7 +60,18 @@ impl App {
             }
             Action::ApplySave => {
                 let path = crate::app::expand_tilde(self.save.input.as_str());
-                match crate::data::io::save_file(&self.stack.active().dataframe, &path) {
+                let sheet = self.stack.active();
+                // A doc-backed sheet is written by re-serialising its tree, so structure
+                // survives and changing the extension converts between formats.  A plain
+                // table is turned into records first.
+                let result = crate::data::io::save_file_as(
+                    &sheet.dataframe,
+                    sheet.doc.as_ref(),
+                    &path,
+                    crate::data::io::doc_io::Shape::Records,
+                    &sheet.title,
+                );
+                match result {
                     Ok(_) => {
                         self.mode = AppMode::Normal;
                         self.status_message =

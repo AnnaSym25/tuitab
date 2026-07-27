@@ -117,9 +117,25 @@ impl App {
     pub(super) fn apply_edit(&mut self) {
         let s = self.stack.active_mut();
         s.push_undo();
-        let new_value = s.edit_input.as_str().to_string();
+        let mut new_value = s.edit_input.as_str().to_string();
         let row = s.edit_row;
         let col = s.edit_col;
+
+        // Doc-backed sheets write into the tree first; the table is only a projection,
+        // and the tree decides how the edited value is typed and rendered back.
+        if let Some(doc) = s.doc.as_mut() {
+            match doc.set_cell(row, col, &new_value) {
+                Ok(shown) => new_value = shown,
+                Err(e) => {
+                    s.undo_stack.pop();
+                    self.mode = AppMode::Normal;
+                    self.status_message = format!("Edit error: {}", e);
+                    return;
+                }
+            }
+        }
+
+        let s = self.stack.active_mut();
         match s.dataframe.set_cell(row, col, new_value.clone()) {
             Ok(_) => {
                 self.mode = AppMode::Normal;
@@ -172,6 +188,27 @@ impl App {
         }
         s.push_undo();
         let selected = s.dataframe.selected_rows.clone();
+
+        // On a doc-backed sheet every selected row is a separate node, so the tree is
+        // updated row by row before the table is patched in bulk.
+        if let Some(doc) = s.doc.as_mut() {
+            let mut failed: Option<String> = None;
+            for &row in &selected {
+                if let Err(e) = doc.set_cell(row, col, &new_value) {
+                    failed = Some(e.to_string());
+                    break;
+                }
+            }
+            if let Some(e) = failed {
+                s.pop_undo();
+                s.redo_stack.pop();
+                s.edit_input.clear();
+                self.mode = AppMode::Normal;
+                self.status_message = format!("Bulk edit error: {}", e);
+                return;
+            }
+        }
+
         let result = s
             .dataframe
             .set_cells_bulk(&selected, col, new_value.clone());

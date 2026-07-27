@@ -63,6 +63,8 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
             KeyCode::Char('T') => Action::TransposeTable,
             KeyCode::Char('e') => Action::StartEdit,
             KeyCode::Char('E') => Action::OpenExternalEditor,
+            // Projection mode for JSON/YAML/TOML sheets
+            KeyCode::Char('m') => Action::CycleViewMode,
             // Undo / Redo
             KeyCode::Char('U') => Action::Undo,
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::SHIFT) => Action::Undo,
@@ -123,6 +125,7 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
                         'R' => Action::ReloadFile,
                         'i' => Action::DescribeSheet,
                         'e' => Action::StartEdit,
+                        'm' => Action::CycleViewMode,
                         'F' => Action::OpenFrequencyTable,
                         'Z' => Action::QuickAggregate,
                         'U' => Action::Undo,
@@ -302,6 +305,7 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
 
         // z-prefix modifier
         AppMode::ZPrefix => match key.code {
+            KeyCode::Enter => Action::OpenCell,
             KeyCode::Char('e') => Action::StartRenameColumn,
             KeyCode::Char('d') => Action::DeleteColumn,
             KeyCode::Char('i') => Action::StartInsertColumn,

@@ -11,6 +11,8 @@
 //! [`crate::data::swap`] and swapped back in when it becomes active again.
 
 use crate::data::dataframe::DataFrame;
+use crate::data::doc::Node;
+use crate::data::io::doc_io::DocState;
 use crate::data::swap;
 use crate::types::SheetType;
 use crate::ui::text_input::TextInput;
@@ -19,16 +21,26 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
+/// One undo entry: the table, plus the document root when the sheet is doc-backed.
+pub struct UndoState {
+    pub dataframe: DataFrame,
+    pub root: Option<Node>,
+}
+
 /// A single data sheet in the stack — owns its DataFrame and all view state.
 pub struct Sheet {
     /// Human-readable title shown in the table border
     pub title: String,
     /// The actual data
     pub dataframe: DataFrame,
-    /// Stack of previous DataFrame states for Undo functionality
-    pub undo_stack: Vec<DataFrame>,
-    /// Stack of DataFrame states for Redo (populated by pop_undo, cleared by push_undo)
-    pub redo_stack: Vec<DataFrame>,
+    /// Document tree behind this sheet, for JSON/JSONL/YAML/TOML sources.  Sheets in a
+    /// dive chain share one tree, so an edit made deep down is visible when popping back.
+    pub doc: Option<DocState>,
+    /// Stack of previous states for Undo.  Doc-backed sheets snapshot the tree alongside
+    /// the table — undoing only the table would leave the two disagreeing.
+    pub undo_stack: Vec<UndoState>,
+    /// Stack of states for Redo (populated by pop_undo, cleared by push_undo)
+    pub redo_stack: Vec<UndoState>,
     /// ratatui row selection state
     pub table_state: TableState,
     /// Currently highlighted column
@@ -105,6 +117,7 @@ impl Sheet {
         Self {
             title,
             dataframe,
+            doc: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             table_state: TableState::default()
@@ -146,24 +159,45 @@ impl Sheet {
         }
     }
 
-    /// Push current DataFrame state to undo stack (max 50). Clears redo stack.
+    /// Snapshot the current state for undo (max 50). Clears redo stack.
     pub fn push_undo(&mut self) {
         if self.undo_stack.len() >= 50 {
             self.undo_stack.remove(0);
         }
-        self.undo_stack.push(self.dataframe.clone());
+        let snapshot = self.snapshot();
+        self.undo_stack.push(snapshot);
         self.redo_stack.clear();
+    }
+
+    fn snapshot(&self) -> UndoState {
+        UndoState {
+            dataframe: self.dataframe.clone(),
+            root: self
+                .doc
+                .as_ref()
+                .and_then(|d| d.doc.read().ok().map(|g| g.root.clone())),
+        }
+    }
+
+    fn restore(&mut self, state: UndoState) {
+        self.dataframe = state.dataframe;
+        if let (Some(doc), Some(root)) = (self.doc.as_ref(), state.root) {
+            if let Ok(mut guard) = doc.doc.write() {
+                guard.root = root;
+            }
+        }
+        self.clamp_cursor();
     }
 
     /// Restore previous state from undo stack. Saves current state to redo.
     pub fn pop_undo(&mut self) -> bool {
-        if let Some(df) = self.undo_stack.pop() {
+        if let Some(state) = self.undo_stack.pop() {
             if self.redo_stack.len() >= 50 {
                 self.redo_stack.remove(0);
             }
-            self.redo_stack.push(self.dataframe.clone());
-            self.dataframe = df;
-            self.clamp_cursor();
+            let current = self.snapshot();
+            self.redo_stack.push(current);
+            self.restore(state);
             true
         } else {
             false
@@ -172,17 +206,32 @@ impl Sheet {
 
     /// Restore next state from redo stack. Saves current state back to undo.
     pub fn pop_redo(&mut self) -> bool {
-        if let Some(df) = self.redo_stack.pop() {
+        if let Some(state) = self.redo_stack.pop() {
             if self.undo_stack.len() >= 50 {
                 self.undo_stack.remove(0);
             }
-            self.undo_stack.push(self.dataframe.clone());
-            self.dataframe = df;
-            self.clamp_cursor();
+            let current = self.snapshot();
+            self.undo_stack.push(current);
+            self.restore(state);
             true
         } else {
             false
         }
+    }
+
+    /// Reset the view after the table was rebuilt from scratch (a reprojection).  Sort
+    /// and search state refer to columns that may no longer exist, so they go too.
+    pub fn reset_view_state(&mut self) {
+        self.sort_col = None;
+        self.sort_desc = false;
+        self.search_pattern = None;
+        self.search_col = None;
+        self.top_row = 0;
+        self.left_col = 0;
+        self.cursor_col = 0;
+        self.table_state.select(Some(0));
+        self.table_state.select_column(Some(0));
+        self.clamp_cursor();
     }
 
     fn clamp_cursor(&mut self) {

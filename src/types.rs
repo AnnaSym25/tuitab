@@ -227,6 +227,10 @@ pub enum Action {
     // ── Table interactions ────────────────────────────────────────────────────
     /// Open the selected row (e.g. for directory browser F1)
     OpenRow,
+    /// Dive into the node under the cursor cell (`zEnter` on a JSON/YAML/TOML sheet)
+    OpenCell,
+    /// Cycle how the anchored node is projected: records / key-value / scalars
+    CycleViewMode,
 
     // ── Save/export ───────────────────────────────────────────────────────────
     SaveFile,

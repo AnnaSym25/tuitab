@@ -1,0 +1,4 @@
+[
+  {"id": 1, "name": "alpha", "tags": ["x", "y"], "meta": {"ok": true}},
+  {"id": 2, "name": "beta", "meta": {"ok": false, "note": "n"}}
+]
