@@ -94,11 +94,30 @@ impl App {
                     shape,
                     &sheet.title,
                 );
+                let loss = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .and_then(crate::data::doc::Format::from_ext)
+                    .and_then(|fmt| {
+                        self.stack
+                            .active()
+                            .doc
+                            .as_ref()
+                            .and_then(|d| d.conversion_loss(fmt))
+                    });
                 match result {
                     Ok(_) => {
                         self.mode = AppMode::Normal;
-                        self.status_message =
-                            format!("Saved successfully to: {}", self.save.input.as_str());
+                        self.status_message = match loss {
+                            Some(note) => format!(
+                                "Saved to {} — note: {}",
+                                self.save.input.as_str(),
+                                note
+                            ),
+                            None => {
+                                format!("Saved successfully to: {}", self.save.input.as_str())
+                            }
+                        };
                         self.save.error = None;
                     }
                     Err(e) => {

@@ -13,6 +13,7 @@ use color_eyre::{eyre::eyre, Result};
 use indexmap::IndexMap;
 use polars::prelude::AnyValue;
 use std::path::Path;
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 pub struct DocState {
@@ -98,6 +99,35 @@ impl DocState {
         }
         if !self.view.expand(path) {
             return Err(eyre!("already expanded"));
+        }
+        self.reproject()
+    }
+
+    /// Delete the given physical rows from the document.
+    ///
+    /// Unlike a column, a row *is* data: in records mode it is an array element, in
+    /// key/value mode a key of the object.  Hiding it from the table without touching
+    /// the tree — which is what the plain DataFrame path does — would look like a
+    /// deletion and then quietly undo itself on the next save.
+    ///
+    /// Array indices are removed high-to-low so the earlier ones stay valid.
+    pub fn delete_rows(&mut self, rows: &HashSet<usize>) -> Result<DataFrame> {
+        let mut paths: Vec<NodePath> = rows
+            .iter()
+            .filter_map(|r| self.row_paths.get(*r).cloned())
+            .collect();
+        if paths.is_empty() {
+            return Err(eyre!("nothing to delete"));
+        }
+        paths.sort_by(|a, b| match (a.last(), b.last()) {
+            (Some(Seg::Idx(x)), Some(Seg::Idx(y))) => y.cmp(x),
+            _ => std::cmp::Ordering::Equal,
+        });
+        {
+            let mut guard = self.doc.write().map_err(|_| eyre!("document lock poisoned"))?;
+            for path in &paths {
+                guard.root.remove(path)?;
+            }
         }
         self.reproject()
     }
@@ -245,6 +275,36 @@ impl DocState {
             return wrapped.save_as(path, format, opts);
         }
         guard.save_as(path, format, opts)
+    }
+
+    /// What this document loses if written as `target`, if anything.
+    ///
+    /// Saving is not the moment to discover that a conversion was one-way, so the
+    /// caller shows this before the write rather than after.
+    pub fn conversion_loss(&self, target: Format) -> Option<String> {
+        let guard = self.doc.read().ok()?;
+        let mut lost: Vec<&str> = Vec::new();
+        if guard.multi_doc && target != Format::Yaml {
+            lost.push("document separators");
+        }
+        if guard.format == Format::Toml
+            && target != Format::Toml
+            && guard
+                .source_text
+                .as_deref()
+                .is_some_and(|s| s.lines().any(|l| l.trim_start().starts_with('#')))
+        {
+            lost.push("comments");
+        }
+        if lost.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "{} cannot carry {}",
+                target.name().to_uppercase(),
+                lost.join(" or ")
+            ))
+        }
     }
 
     /// Breadcrumb trail shown in the sheet title: `config.toml › servers › [1]`.

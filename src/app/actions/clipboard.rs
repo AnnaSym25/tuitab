@@ -234,6 +234,14 @@ impl App {
     }
 
     pub(super) fn paste_rows(&mut self) {
+        // A clipboard table has no defined meaning as document rows: the columns are a
+        // projection, not the shape of a node.  Pasting into a document is `E`.
+        if self.stack.active().doc.is_some() {
+            self.status_message =
+                "Paste does not apply to a JSON/YAML/TOML view — press E to edit the document"
+                    .to_string();
+            return;
+        }
         match crate::clipboard::paste_from_clipboard() {
             Ok(text) => {
                 let s = self.stack.active_mut();

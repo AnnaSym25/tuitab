@@ -8,7 +8,7 @@ impl App {
     /// the next reprojection *and* would desync the cell→node mapping in the meantime,
     /// sending later edits to the wrong node.  Changing the document itself is what `E`
     /// is for.
-    fn reject_on_doc_sheet(&mut self, what: &str) -> bool {
+    pub(crate) fn reject_on_doc_sheet(&mut self, what: &str) -> bool {
         if self.stack.active().doc.is_none() {
             return false;
         }
@@ -212,6 +212,10 @@ impl App {
             }
             Action::DecreasePrecision => {
                 self.adjust_precision(-1);
+                None
+            }
+            Action::CreatePctColumn if self.stack.active().doc.is_some() => {
+                self.reject_on_doc_sheet("Adding a % column");
                 None
             }
             Action::CreatePctColumn => {

@@ -294,6 +294,32 @@ impl Node {
         }
     }
 
+    /// Remove the node at `path` from its parent: a key from an object, an element from
+    /// an array.  Removing the root is refused — there would be nothing left to show.
+    pub fn remove(&mut self, path: &[Seg]) -> Result<()> {
+        let Some((last, parents)) = path.split_last() else {
+            return Err(eyre!("cannot remove the whole document"));
+        };
+        let parent = self
+            .get_mut(parents)
+            .ok_or_else(|| eyre!("no node at {}", path_to_string(parents)))?;
+        match (parent, last) {
+            (Node::Obj(m), Seg::Key(k)) => {
+                m.shift_remove(k)
+                    .map(|_| ())
+                    .ok_or_else(|| eyre!("no key `{}`", k))
+            }
+            (Node::Arr(v), Seg::Idx(i)) => {
+                if *i >= v.len() {
+                    return Err(eyre!("index {} out of range", i));
+                }
+                v.remove(*i);
+                Ok(())
+            }
+            _ => Err(eyre!("cannot remove {}", path_to_string(path))),
+        }
+    }
+
     /// Compact one-line rendering for a table cell, in the spirit of VisiData's
     /// `iterchars`: `{3} host=localhost port=5432 ssl=true` / `[2] alpha; beta`.
     /// Stops as soon as `max_width` display chars have been produced.

@@ -853,3 +853,125 @@ fn converting_a_commented_toml_to_yaml_drops_the_comments() {
     assert!(!text.contains("# a comment"), "{}", text);
     assert!(text.contains("name: demo"), "{}", text);
 }
+
+/// Deleting rows on a doc-backed sheet must reach the document. Filtering them out of
+/// the view only would look like a deletion and then undo itself on the next save.
+#[test]
+fn deleting_rows_removes_them_from_the_document() {
+    use tuitab::types::Action;
+
+    let path = out("delete-rows.json");
+    std::fs::write(&path, r#"[{"id":1},{"id":2},{"id":3}]"#).unwrap();
+    let mut app = tuitab::app::App::new(&path, None).unwrap();
+
+    // select rows 0 and 2
+    app.stack.active_mut().dataframe.selected_rows.insert(0);
+    app.stack.active_mut().dataframe.selected_rows.insert(2);
+    app.handle_action(Action::DeleteSelectedRows);
+
+    let s = app.stack.active();
+    assert_eq!(s.dataframe.visible_row_count(), 1, "{}", app.status_message);
+    assert_eq!(s.dataframe.get_physical(0, 0), "2");
+    assert!(s.doc_mapping_ok(), "the mapping is rebuilt with the table");
+
+    app.handle_action(Action::SaveFile);
+    app.save.input =
+        tuitab::ui::text_input::TextInput::with_value(path.to_string_lossy().into_owned());
+    app.handle_action(Action::ApplySave);
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("\"id\": 1"), "deleted rows stay deleted: {}", text);
+    assert!(text.contains("\"id\": 2"), "{}", text);
+
+    // and undo brings them back, document and table together
+    app.handle_action(Action::Undo);
+    assert_eq!(app.stack.active().dataframe.visible_row_count(), 3);
+}
+
+/// In key/value mode a row is an object key, so deleting one removes the key.
+#[test]
+fn deleting_a_row_in_key_value_mode_removes_the_key() {
+    use tuitab::types::Action;
+
+    let path = out("delete-key.toml");
+    std::fs::write(&path, "a = 1\nb = 2\nc = 3\n").unwrap();
+    let mut app = tuitab::app::App::new(&path, None).unwrap();
+
+    let row = (0..3)
+        .find(|r| app.stack.active().dataframe.get_physical(*r, 0) == "b")
+        .unwrap();
+    app.stack.active_mut().dataframe.selected_rows.insert(row);
+    app.handle_action(Action::DeleteSelectedRows);
+
+    let sheet = app.stack.active();
+    let target = out("delete-key-out.toml");
+    save_file_as(
+        &sheet.dataframe,
+        sheet.doc.as_ref(),
+        &target,
+        Shape::Records,
+        "x",
+    )
+    .unwrap();
+    let text = std::fs::read_to_string(&target).unwrap();
+    assert!(!text.contains("b ="), "{}", text);
+    assert!(text.contains("a = 1") && text.contains("c = 3"), "{}", text);
+}
+
+/// Operations that reshape the table without a matching change in the document are
+/// refused, so the cell→node mapping can never drift.
+#[test]
+fn table_reshaping_operations_are_refused_on_a_doc_sheet() {
+    use tuitab::types::Action;
+
+    let mut app = tuitab::app::App::new(&fixture("nested.json"), None).unwrap();
+    let before = app.stack.active().dataframe.columns.len();
+
+    for action in [Action::StartExpression, Action::CreatePctColumn, Action::PasteRows] {
+        app.handle_action(action.clone());
+        assert_eq!(
+            app.stack.active().dataframe.columns.len(),
+            before,
+            "{:?} must not reshape the table",
+            action
+        );
+        assert!(app.stack.active().doc_mapping_ok());
+    }
+}
+
+/// A one-way conversion says so at the moment of saving, not afterwards.
+#[test]
+fn a_lossy_conversion_is_named_in_the_status_line() {
+    use tuitab::types::Action;
+
+    // multi-document YAML written as JSON loses the document separation
+    let mut app = tuitab::app::App::new(&fixture("k8s.yaml"), None).unwrap();
+    app.handle_action(Action::SaveFile);
+    let target = out("k8s-lossy.json");
+    app.save.input =
+        tuitab::ui::text_input::TextInput::with_value(target.to_string_lossy().into_owned());
+    app.handle_action(Action::ApplySave);
+    assert!(
+        app.status_message.contains("document separators"),
+        "{}",
+        app.status_message
+    );
+
+    // a commented TOML written as YAML loses the comments
+    let src = out("lossy-src.toml");
+    std::fs::write(&src, "# a note\nname = \"x\"\n").unwrap();
+    let mut app = tuitab::app::App::new(&src, None).unwrap();
+    app.handle_action(Action::SaveFile);
+    let yaml = out("lossy-out.yaml");
+    app.save.input =
+        tuitab::ui::text_input::TextInput::with_value(yaml.to_string_lossy().into_owned());
+    app.handle_action(Action::ApplySave);
+    assert!(app.status_message.contains("comments"), "{}", app.status_message);
+
+    // and a conversion that loses nothing stays quiet
+    app.handle_action(Action::SaveFile);
+    let toml = out("lossy-out.toml");
+    app.save.input =
+        tuitab::ui::text_input::TextInput::with_value(toml.to_string_lossy().into_owned());
+    app.handle_action(Action::ApplySave);
+    assert!(!app.status_message.contains("note:"), "{}", app.status_message);
+}

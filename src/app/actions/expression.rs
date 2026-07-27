@@ -4,6 +4,12 @@ use crate::types::{Action, AppMode};
 impl App {
     pub(crate) fn handle_expression_action(&mut self, action: Action) -> Option<Action> {
         match action {
+            Action::StartExpression if self.stack.active().doc.is_some() => {
+                // A computed column is inserted next to the cursor, shifting every
+                // column after it and with it the cell→node mapping.
+                self.reject_on_doc_sheet("Computed columns");
+                None
+            }
             Action::StartExpression => {
                 self.stack.active_mut().expr_input.clear();
                 self.mode = AppMode::ExpressionInput;

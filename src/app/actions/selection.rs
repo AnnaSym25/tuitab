@@ -236,6 +236,37 @@ impl App {
             return;
         }
         s.push_undo();
+
+        // On a doc-backed sheet a row is an array element or an object key, so the
+        // deletion has to reach the tree.  Filtering `row_order` alone would only hide
+        // the rows, and the next save would bring them back.
+        if s.doc.is_some() {
+            let selected = s.dataframe.selected_rows.clone();
+            let doc = s.doc.as_mut().expect("checked above");
+            match doc.delete_rows(&selected) {
+                Ok(df) => {
+                    s.dataframe = df;
+                    s.dataframe.selected_rows.clear();
+                    s.dataframe.modified = true;
+                    let vis = s.dataframe.visible_row_count();
+                    s.scroll_state = ScrollbarState::new(vis.saturating_sub(1));
+                    let sel = s
+                        .table_state
+                        .selected()
+                        .unwrap_or(0)
+                        .min(vis.saturating_sub(1));
+                    s.table_state.select(Some(sel));
+                    self.status_message = format!("Deleted {} rows", count);
+                }
+                Err(e) => {
+                    s.pop_undo();
+                    s.redo_stack.pop();
+                    self.status_message = format!("Delete failed: {}", e);
+                }
+            }
+            return;
+        }
+
         std::sync::Arc::make_mut(&mut s.dataframe.row_order)
             .retain(|idx| !s.dataframe.selected_rows.contains(idx));
         std::sync::Arc::make_mut(&mut s.dataframe.original_order)

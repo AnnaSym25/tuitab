@@ -169,7 +169,15 @@ all still defaults to CSV, and is only re-read as JSON when it starts with `[` o
 | `)` | Fold the innermost expansion back into one column |
 | `e` | Edit a scalar — the value keeps its type, and a string stays a string |
 | `E` | Edit a container as text in `$EDITOR` (add, remove or reorder keys) |
+| `d` | Delete the selected rows — removes them from the document |
 | `Ctrl+S` | Save; a different extension converts the format |
+
+A conversion that cannot carry everything says so in the status line as it saves —
+multi-document YAML written as JSON, or a commented TOML written as anything else.
+
+Operations that would reshape the table without a matching change in the document —
+paste, computed columns, and the `z` column operations — are refused with a note
+pointing at `E`.
 
 Every sheet in a dive chain shares one document, so an edit made three levels down is
 there when you come back up, and `U` undoes it at any level.
