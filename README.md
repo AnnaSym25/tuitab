@@ -20,7 +20,8 @@ leaving the terminal.
 ```sh
 tuitab data.csv                   # open a file
 tuitab config.toml                # JSON / YAML / TOML open as a browsable tree
-tuitab -t yaml deploy.conf        # force a format when the extension lies
+tuitab deploy.conf                # unknown extension? the contents decide
+tuitab -t yaml weird.dat          # or force a format outright
 tuitab orders.csv customers.csv   # browse several files as a list
 cat data.csv | tuitab -t csv      # read from a pipe
 ```

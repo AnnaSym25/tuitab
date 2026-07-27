@@ -56,6 +56,25 @@ pub fn load_file_as(
         return Ok((df, Some(state)));
     }
 
+    // The extension said nothing useful.  Look at the contents before giving up — or,
+    // for a file with no extension, before falling back to the CSV default.
+    let has_ext = path.extension().is_some();
+    let known_tabular = matches!(
+        ext.as_str(),
+        "csv" | "tsv" | "txt" | "parquet" | "xlsx" | "xls" | "db" | "sqlite" | "sqlite3"
+            | "duckdb" | "ddb"
+    );
+    if !has_ext || !known_tabular {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Some(fmt) = crate::data::doc::sniff(&text, !has_ext) {
+                let mut doc = crate::data::doc::Doc::from_str(&text, fmt)?;
+                doc.path = Some(path.to_path_buf());
+                let (df, state) = doc_io::DocState::from_doc(doc)?;
+                return Ok((df, Some(state)));
+            }
+        }
+    }
+
     load_tabular(path, delimiter, &ext).map(|df| (df, None))
 }
 

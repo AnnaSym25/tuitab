@@ -148,7 +148,10 @@ save path, …):
 
 ## JSON / YAML / TOML sheets
 
-These formats open as a table over the real document, not as a flattened copy.
+These formats open as a table over the real document, not as a flattened copy. The
+format comes from the extension, from `--type`, or — for an unrecognised extension —
+from the contents: `deploy.conf` holding TOML opens as TOML. A file with no extension at
+all still defaults to CSV, and is only re-read as JSON when it starts with `[` or `{`.
 
 | Key | Action |
 |-----|--------|

@@ -53,6 +53,49 @@ impl Format {
     }
 }
 
+/// Guess a structured format from the contents of `text`.
+///
+/// `bracket_only` restricts the guess to JSON and JSONL, which announce themselves
+/// unambiguously with a leading `[` or `{`.  Callers pass it for files with no extension
+/// at all, where the existing default is CSV and a wrong guess would be a regression;
+/// files with an unrecognised extension would otherwise just fail to open, so there
+/// anything we can parse is a win.
+///
+/// TOML is tried before YAML on purpose.  TOML is the stricter grammar, so it rarely
+/// matches something that is not TOML — whereas YAML happily parses `name = "x"` as one
+/// long scalar string and would claim every TOML file it saw.
+pub fn sniff(text: &str, bracket_only: bool) -> Option<Format> {
+    let first = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with("//") && !l.starts_with('#'))?;
+
+    if first.starts_with('{') && first.ends_with('}') {
+        // A complete object on line one means one record per line unless the file turns
+        // out to be a single pretty-printed object.
+        if text.lines().filter(|l| l.trim().starts_with('{')).count() > 1 {
+            return Some(Format::Jsonl);
+        }
+        return Some(Format::Json);
+    }
+    if first.starts_with('[') || first.starts_with('{') {
+        return Some(Format::Json);
+    }
+    if bracket_only {
+        return None;
+    }
+    if toml::from_str::<toml::Value>(text).is_ok() {
+        return Some(Format::Toml);
+    }
+    // A bare scalar is not evidence of YAML — every plain text file is one.
+    if let Ok((node, _)) = parse_yaml(text) {
+        if node.is_container() {
+            return Some(Format::Yaml);
+        }
+    }
+    None
+}
+
 /// One node of the document tree.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node {
@@ -699,5 +742,34 @@ mod tests {
         let clipped = n.render_compact(10);
         assert_eq!(clipped.chars().count(), 10, "{:?}", clipped);
         assert!(clipped.ends_with('…'));
+    }
+
+    #[test]
+    fn sniffing_prefers_the_stricter_grammar() {
+        // TOML must win: YAML would happily read this as one long scalar string
+        assert_eq!(sniff("name = \"x\"\nport = 1\n", false), Some(Format::Toml));
+        assert_eq!(sniff("name: x\nport: 1\n", false), Some(Format::Yaml));
+        assert_eq!(sniff("- a\n- b\n", false), Some(Format::Yaml));
+        assert_eq!(sniff("[{\"a\":1}]", false), Some(Format::Json));
+        assert_eq!(sniff("{\"a\":1}\n{\"a\":2}\n", false), Some(Format::Jsonl));
+        assert_eq!(sniff("{\n  \"a\": 1\n}\n", false), Some(Format::Json));
+    }
+
+    #[test]
+    fn sniffing_refuses_plain_text_and_delimited_data() {
+        assert_eq!(sniff("just some prose\n", false), None, "a scalar is not YAML");
+        assert_eq!(sniff("", false), None);
+        // a CSV must never be mistaken for a document, extension or not
+        assert_eq!(sniff("a,b,c\n1,2,3\n", false), None);
+        assert_eq!(sniff("a,b,c\n1,2,3\n", true), None);
+    }
+
+    #[test]
+    fn bracket_only_sniffing_ignores_yaml_and_toml() {
+        // used for extension-less files, where the established default is CSV and a
+        // wrong guess would be a regression
+        assert_eq!(sniff("name: x\n", true), None);
+        assert_eq!(sniff("name = \"x\"\n", true), None);
+        assert_eq!(sniff("[1, 2]", true), Some(Format::Json));
     }
 }

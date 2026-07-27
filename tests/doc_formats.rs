@@ -622,3 +622,41 @@ fn a_large_json_loaded_in_the_background_keeps_its_document() {
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(&out_path);
 }
+
+/// A file whose extension says nothing is identified by its contents.
+#[test]
+fn an_unknown_extension_is_sniffed_from_the_contents() {
+    let (df, doc) = load_file_with_doc(&fixture("deploy.conf"), None).unwrap();
+    let doc = doc.expect("deploy.conf is TOML and must open as a document");
+    assert_eq!(doc.format(), Format::Toml);
+    assert_eq!(df.visible_row_count(), 2, "listen and tls");
+
+    // an unrecognised extension holding nothing parseable still fails as before
+    let prose = out("notes.rubbish");
+    std::fs::write(&prose, "1. Definitions.\n\nSome prose, not a document.\n").unwrap();
+    assert!(
+        load_file_with_doc(&prose, None).is_err(),
+        "prose is neither tabular nor a document"
+    );
+}
+
+/// A file with no extension keeps defaulting to CSV — sniffing there is limited to the
+/// unambiguous bracket forms so an extension-less CSV does not regress.
+#[test]
+fn an_extensionless_file_only_sniffs_json() {
+    let json = out("noext-json");
+    std::fs::write(&json, "[{\"a\":1}]\n").unwrap();
+    let (_, doc) = load_file_with_doc(&json, None).unwrap();
+    assert_eq!(doc.map(|d| d.format()), Some(Format::Json));
+
+    let csv = out("noext-csv");
+    std::fs::write(&csv, "a,b\n1,2\n").unwrap();
+    let (df, doc) = load_file_with_doc(&csv, None).unwrap();
+    assert!(doc.is_none(), "still read as CSV");
+    assert_eq!(df.col_count(), 2);
+
+    let yaml_ish = out("noext-yaml");
+    std::fs::write(&yaml_ish, "a: 1\nb: 2\n").unwrap();
+    let (_, doc) = load_file_with_doc(&yaml_ish, None).unwrap();
+    assert!(doc.is_none(), "no extension means no YAML guess");
+}
