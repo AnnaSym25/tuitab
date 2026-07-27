@@ -2694,7 +2694,7 @@ impl App {
 
     /// Apply a scalar edited in `$EDITOR`, routing through the document tree when the
     /// sheet has one so the value keeps its type.
-    fn apply_cell_from_editor(&mut self, physical_row: usize, col: usize, new_value: String) {
+    pub(crate) fn apply_cell_from_editor(&mut self, physical_row: usize, col: usize, new_value: String) {
         let s = self.stack.active_mut();
         s.push_undo();
 
@@ -2725,7 +2725,7 @@ impl App {
     /// Replace a whole subtree with text edited in `$EDITOR`.  If it does not parse,
     /// nothing is written and the temp file is kept and named in the status line — a
     /// rejected edit must never silently discard what the user typed.
-    fn apply_node_from_editor(
+    pub(crate) fn apply_node_from_editor(
         &mut self,
         path: &[crate::data::doc::Seg],
         text: &str,

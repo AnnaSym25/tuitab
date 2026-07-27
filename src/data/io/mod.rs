@@ -117,7 +117,7 @@ pub fn save_file_as(
     if let Some(fmt) = crate::data::doc::Format::from_ext(&ext) {
         let opts = crate::data::doc::SaveOpts::default();
         return match doc {
-            Some(state) => state.save(path, fmt, &opts),
+            Some(state) => state.save_wrapped(path, fmt, &opts, sheet_name),
             None => doc_io::table_to_doc(df, shape, fmt, sheet_name)?.save_as(path, fmt, &opts),
         };
     }

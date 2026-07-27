@@ -357,4 +357,96 @@ mod tests {
         let n = tdf.col_split(1, "0").unwrap();
         assert_eq!(n, 2);
     }
+
+
+    // ── $EDITOR round trip for JSON/YAML/TOML nodes ───────────────────────────
+    //
+    // The suspend/resume half needs a real terminal, but the half that matters — parse
+    // the buffer, replace the subtree, and above all do not lose the user's text when it
+    // does not parse — is plain logic and is covered here.
+
+    fn doc_app(src: &str, name: &str) -> crate::app::App {
+        let dir = std::env::temp_dir().join("tuitab-editor-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, src).unwrap();
+        crate::app::App::new(&path, None).unwrap()
+    }
+
+    #[test]
+    fn editing_a_node_in_the_editor_replaces_the_subtree() {
+        use crate::data::doc::{Format, Node, SaveOpts, Seg};
+
+        let mut app = doc_app(r#"{"db":{"host":"h"}}"#, "node-ok.json");
+        let path = vec![Seg::Key("db".into())];
+        let tmp = std::env::temp_dir().join("tuitab-editor-tests/buf.json");
+        std::fs::write(&tmp, "{}").unwrap();
+
+        app.apply_node_from_editor(&path, r#"{"host":"h2","port":5432}"#, &tmp);
+
+        let doc = app.stack.active().doc.as_ref().unwrap();
+        let out = doc
+            .doc
+            .read()
+            .unwrap()
+            .to_string_as(
+                Format::Json,
+                &SaveOpts { indent: false, sort_keys: false },
+            )
+            .unwrap();
+        assert_eq!(out.trim(), r#"{"db":{"host":"h2","port":5432}}"#);
+        // the table was rebuilt, so the mapping still lines up
+        assert!(app.stack.active().doc_mapping_ok());
+        assert_eq!(
+            doc.doc
+                .read()
+                .unwrap()
+                .root
+                .get(&[Seg::Key("db".into()), Seg::Key("port".into())]),
+            Some(&Node::Int(5432))
+        );
+    }
+
+    #[test]
+    fn a_node_that_does_not_parse_leaves_the_document_alone_and_keeps_the_text() {
+        use crate::data::doc::{Format, SaveOpts, Seg};
+
+        let mut app = doc_app(r#"{"db":{"host":"h"}}"#, "node-bad.json");
+        let path = vec![Seg::Key("db".into())];
+        let tmp = std::env::temp_dir().join("tuitab-editor-tests/bad.json");
+        let typed = "{\"host\": oops";
+        std::fs::write(&tmp, typed).unwrap();
+
+        app.apply_node_from_editor(&path, typed, &tmp);
+
+        let out = app
+            .stack
+            .active()
+            .doc
+            .as_ref()
+            .unwrap()
+            .doc
+            .read()
+            .unwrap()
+            .to_string_as(
+                Format::Json,
+                &SaveOpts { indent: false, sort_keys: false },
+            )
+            .unwrap();
+        assert_eq!(out.trim(), r#"{"db":{"host":"h"}}"#, "document untouched");
+        assert!(
+            app.status_message.contains("Parse error"),
+            "{}",
+            app.status_message
+        );
+
+        // the rejected buffer is kept somewhere the message points at
+        let kept: String = app
+            .status_message
+            .split("kept in ")
+            .nth(1)
+            .expect(&app.status_message)
+            .to_string();
+        assert_eq!(std::fs::read_to_string(kept.trim()).unwrap(), typed);
+    }
 }

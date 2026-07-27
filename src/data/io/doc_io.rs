@@ -216,6 +216,36 @@ impl DocState {
         guard.save_as(path, format, opts)
     }
 
+    /// Save, wrapping the document if the target format cannot hold its shape.
+    ///
+    /// Only TOML needs this: its top level must be a table, so a JSON array of records
+    /// becomes an array of tables named after the sheet.  Without the wrap, converting
+    /// `data.json` to `data.toml` would just fail with nothing the user could do about
+    /// it, and conversion is the whole point of writing through the tree.
+    pub fn save_wrapped(
+        &self,
+        path: &Path,
+        format: Format,
+        opts: &SaveOpts,
+        name: &str,
+    ) -> Result<()> {
+        let guard = self.doc.read().map_err(|_| eyre!("document lock poisoned"))?;
+        if format == Format::Toml && !matches!(guard.root, Node::Obj(_)) {
+            let wrapped = Doc {
+                format,
+                root: Node::Obj(
+                    [(toml_table_name(name), guard.root.clone())]
+                        .into_iter()
+                        .collect::<IndexMap<_, _>>(),
+                ),
+                path: None,
+                multi_doc: false,
+            };
+            return wrapped.save_as(path, format, opts);
+        }
+        guard.save_as(path, format, opts)
+    }
+
     /// Breadcrumb trail shown in the sheet title: `config.toml › servers › [1]`.
     pub fn breadcrumbs(&self, root_name: &str) -> String {
         let mut s = String::from(root_name);
@@ -375,9 +405,12 @@ pub fn table_to_doc(
 
 /// TOML array-of-tables needs a name; fall back to `rows` when the sheet title yields
 /// nothing usable.  Keys are quoted by the serialiser if they are not bare-legal, so no
-/// sanitising is needed beyond dropping whitespace.
+/// sanitising is needed beyond dropping whitespace and any extension the sheet title
+/// carries (a sheet is usually named after its file).
 fn toml_table_name(name: &str) -> String {
-    let cleaned: String = name
+    let stem = name.rsplit('/').next().unwrap_or(name);
+    let stem = stem.split('.').next().unwrap_or(stem);
+    let cleaned: String = stem
         .trim()
         .chars()
         .map(|c| if c.is_whitespace() { '_' } else { c })

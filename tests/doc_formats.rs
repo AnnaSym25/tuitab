@@ -660,3 +660,15 @@ fn an_extensionless_file_only_sniffs_json() {
     let (_, doc) = load_file_with_doc(&yaml_ish, None).unwrap();
     assert!(doc.is_none(), "no extension means no YAML guess");
 }
+
+/// Converting a JSON array of records to TOML must work: TOML has no array at the top
+/// level, so it becomes an array of tables named after the sheet.
+#[test]
+fn an_array_rooted_document_can_still_be_saved_as_toml() {
+    let (df, doc) = load_file_with_doc(&fixture("rows.jsonl"), None).unwrap();
+    let doc = doc.unwrap();
+    let path = out("rows.toml");
+    save_file_as(&df, Some(&doc), &path, Shape::Records, "rows").unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(text.matches("[[rows]]").count(), 2, "{}", text);
+}
