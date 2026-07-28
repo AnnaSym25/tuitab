@@ -294,6 +294,7 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
             KeyCode::Char('g') => Action::GoTop,           // gg → go to top
             KeyCode::Char('/') => Action::StartDocSearch,  // g/ → search the whole document
             KeyCode::Char('p') => Action::StartPathGoto,   // gp → go to a document path
+            KeyCode::Char('q') => Action::StartQuery,      // gq → run a jq program
             KeyCode::Char('s') => Action::SelectAllRows,   // gs → select all
             KeyCode::Char('u') => Action::UnselectAllRows, // gu → unselect all
             KeyCode::Char('t') => Action::ToggleAllSelection, // gt → toggle all selection
@@ -308,6 +309,19 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
         },
 
         // z-prefix modifier
+        AppMode::QueryInput => match key.code {
+            KeyCode::Esc => Action::CancelQuery,
+            KeyCode::Enter => Action::ApplyQuery,
+            KeyCode::Backspace => Action::QueryBackspace,
+            KeyCode::Delete => Action::QueryForwardDelete,
+            KeyCode::Left => Action::QueryCursorLeft,
+            KeyCode::Right => Action::QueryCursorRight,
+            KeyCode::Home => Action::QueryCursorStart,
+            KeyCode::End => Action::QueryCursorEnd,
+            KeyCode::Char(c) => Action::QueryInputChar(c),
+            _ => Action::None,
+        },
+
         AppMode::PathInput => match key.code {
             KeyCode::Esc => Action::CancelPathGoto,
             KeyCode::Enter => Action::ApplyPathGoto,

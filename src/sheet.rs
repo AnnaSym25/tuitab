@@ -79,6 +79,8 @@ pub struct Sheet {
 
     /// Path typed for `gp` (go to a node by its document path)
     pub path_input: TextInput,
+    /// jq program typed for `gq`
+    pub query_input: TextInput,
 
     // ── Expression state (=) ──────────────────────────────────────────────────
     pub expr_input: TextInput,
@@ -151,6 +153,7 @@ impl Sheet {
             search_col: None,
             select_regex_input: TextInput::new(),
             path_input: TextInput::new(),
+            query_input: TextInput::new(),
             expr_input: TextInput::new(),
             edit_input: TextInput::new(),
             edit_row: 0,

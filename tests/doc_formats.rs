@@ -1326,3 +1326,97 @@ fn goto_path_jumps_to_the_node_and_reports_a_wrong_path_usefully() {
     app.handle_action(Action::ApplyPathGoto);
     assert!(app.status_message.contains("Bad path"), "{}", app.status_message);
 }
+
+/// `gq` runs a jq program and opens the result as an ordinary sheet — diving, editing
+/// and saving all work on it, because a query result is just another document.
+#[test]
+fn a_jq_query_opens_its_result_as_a_sheet() {
+    use tuitab::types::{Action, AppMode};
+
+    let path = out("query.json");
+    std::fs::write(
+        &path,
+        r#"[{"n":1,"ok":true},{"n":2,"ok":false},{"n":3,"ok":true}]"#,
+    )
+    .unwrap();
+    let mut app = tuitab::app::App::new(&path, None).unwrap();
+
+    app.handle_action(Action::StartQuery);
+    assert_eq!(app.mode, AppMode::QueryInput);
+    for c in ".[] | select(.ok)".chars() {
+        app.handle_action(Action::QueryInputChar(c));
+    }
+    app.handle_action(Action::ApplyQuery);
+    assert_eq!(app.mode, AppMode::Normal, "{}", app.status_message);
+
+    let s = app.stack.active();
+    assert_eq!(s.dataframe.visible_row_count(), 2, "{}", app.status_message);
+    assert_eq!(s.dataframe.get_physical(1, 0), "3");
+    assert!(s.doc.is_some(), "the result is a document sheet");
+
+    // it must not offer to overwrite the file the query ran against
+    assert!(
+        s.source_path.is_none(),
+        "a query result is not the source file"
+    );
+
+    // and it saves as its own document
+    let target = out("query-result.json");
+    save_file_as(
+        &s.dataframe,
+        s.doc.as_ref(),
+        &target,
+        Shape::Records,
+        &s.title,
+    )
+    .unwrap();
+    let text = std::fs::read_to_string(&target).unwrap();
+    assert!(text.contains("\"n\": 1") && text.contains("\"n\": 3"), "{}", text);
+    assert!(!text.contains("\"n\": 2"), "{}", text);
+}
+
+/// A query that reshapes a nested object into records makes something browsable out of
+/// something that was not.
+#[test]
+fn a_jq_query_can_reshape_a_document_into_a_table() {
+    use tuitab::types::Action;
+
+    let path = out("reshape.yaml");
+    std::fs::write(&path, "users:\n  alice:\n    age: 30\n  bob:\n    age: 40\n").unwrap();
+    let mut app = tuitab::app::App::new(&path, None).unwrap();
+
+    app.handle_action(Action::StartQuery);
+    for c in ".users | to_entries | map({name: .key, age: .value.age})".chars() {
+        app.handle_action(Action::QueryInputChar(c));
+    }
+    app.handle_action(Action::ApplyQuery);
+
+    let s = app.stack.active();
+    let names: Vec<&str> = s.dataframe.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["name", "age"], "{}", app.status_message);
+    assert_eq!(s.dataframe.visible_row_count(), 2);
+    assert_eq!(s.doc.as_ref().unwrap().format(), Format::Yaml, "keeps the source format");
+}
+
+/// A broken program says so and pushes nothing.
+#[test]
+fn a_failing_query_reports_and_pushes_nothing() {
+    use tuitab::types::Action;
+
+    let mut app = tuitab::app::App::new(&fixture("nested.json"), None).unwrap();
+    let depth = app.stack.depth();
+
+    for program in [".[ | broken", ".[] | select(.nope == 42)"] {
+        app.handle_action(Action::StartQuery);
+        app.stack.active_mut().query_input =
+            tuitab::ui::text_input::TextInput::with_value(program.into());
+        app.handle_action(Action::ApplyQuery);
+        assert_eq!(app.stack.depth(), depth, "no sheet for `{}`", program);
+        assert!(
+            app.status_message.contains("Query failed"),
+            "`{}`: {}",
+            program,
+            app.status_message
+        );
+    }
+}

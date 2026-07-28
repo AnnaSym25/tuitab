@@ -14,6 +14,7 @@
 //! | [`aggregator`] | [`aggregator::AggregatorKind`] enum and compatibility rules |
 //! | [`sort`] | Sort-by-column implementation using Polars `arg_sort` |
 //! | [`swap`] | Serialize/deserialize a `DataFrame` to disk to free memory when sheets are stacked |
+//! | [`query`] | jq programs over a document — the result is just another document |
 //! | [`view`] | [`view::View`] — projection of a `Doc` subtree into a table, and the cell→node mapping behind editing |
 
 pub mod aggregator;
@@ -25,6 +26,7 @@ pub mod expression;
 pub mod io;
 pub mod join;
 pub mod loader;
+pub mod query;
 pub mod sort;
 pub mod swap;
 pub mod view;

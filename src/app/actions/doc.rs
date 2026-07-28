@@ -330,6 +330,69 @@ impl App {
         self.open_node_path(handle, &path);
     }
 
+    /// Prompt for a jq program to run over the document (`gq`).
+    pub(crate) fn start_query(&mut self) {
+        if self.stack.active().doc.is_none() {
+            self.mode = AppMode::Normal;
+            self.status_message = "Queries need a JSON/YAML/TOML sheet".to_string();
+            return;
+        }
+        self.mode = AppMode::QueryInput;
+        self.status_message.clear();
+    }
+
+    /// Run the program and open its result as a sheet of its own.
+    ///
+    /// The result is a *new* document, not a view of the old one, so it deliberately
+    /// does not inherit `source_path`: `Ctrl+S` on a query result must not default to
+    /// overwriting the file the query was run against.
+    pub(crate) fn apply_query(&mut self) {
+        self.mode = AppMode::Normal;
+        let program = self.stack.active().query_input.as_str().to_string();
+        let Some(doc) = self.stack.active().doc.as_ref() else {
+            return;
+        };
+        let format = doc.format();
+
+        let result = {
+            let Ok(guard) = doc.doc.read() else {
+                self.status_message = "Document lock poisoned".to_string();
+                return;
+            };
+            crate::data::query::run_jq(&guard.root, &program)
+        };
+        let root = match result {
+            Ok(node) => node,
+            Err(e) => {
+                self.status_message = format!("Query failed: {}", e);
+                return;
+            }
+        };
+
+        // A query result keeps the source's format so saving it writes the kind of file
+        // the user was already looking at, but carries no source text: it is not that
+        // file any more, and its comments do not belong to this shape.
+        let derived = crate::data::doc::Doc {
+            format,
+            root,
+            path: None,
+            source_text: None,
+            multi_doc: false,
+            revision: 0,
+        };
+        match crate::data::io::doc_io::DocState::from_doc(derived) {
+            Ok((df, state)) => {
+                let rows = df.visible_row_count();
+                let title = format!("{} › {}", root_name(&self.stack.active().title), program);
+                let mut sheet = crate::sheet::Sheet::new(title, df);
+                sheet.doc = Some(state);
+                self.stack.push(sheet);
+                self.status_message = format!("{} rows", rows);
+            }
+            Err(e) => self.status_message = format!("Query failed: {}", e),
+        }
+    }
+
     /// Expand the cursor column of containers into one column per child (`(`).
     pub(crate) fn expand_column(&mut self) {
         self.reshape_columns(true);

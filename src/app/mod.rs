@@ -623,6 +623,19 @@ impl App {
             Action::CycleViewMode => self.cycle_view_mode(),
             Action::StartDocSearch => self.start_doc_search(),
             Action::StartPathGoto => self.start_path_goto(),
+            Action::StartQuery => self.start_query(),
+            Action::ApplyQuery => self.apply_query(),
+            Action::CancelQuery => {
+                self.mode = AppMode::Normal;
+                self.stack.active_mut().query_input.clear();
+            }
+            Action::QueryInputChar(c) => self.stack.active_mut().query_input.insert_char(c),
+            Action::QueryBackspace => self.stack.active_mut().query_input.delete_backward(),
+            Action::QueryForwardDelete => self.stack.active_mut().query_input.delete_forward(),
+            Action::QueryCursorLeft => self.stack.active_mut().query_input.move_cursor_left(),
+            Action::QueryCursorRight => self.stack.active_mut().query_input.move_cursor_right(),
+            Action::QueryCursorStart => self.stack.active_mut().query_input.move_cursor_start(),
+            Action::QueryCursorEnd => self.stack.active_mut().query_input.move_cursor_end(),
             Action::ApplyPathGoto => self.apply_path_goto(),
             Action::CancelPathGoto => {
                 self.mode = AppMode::Normal;

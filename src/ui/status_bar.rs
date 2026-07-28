@@ -46,6 +46,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         AppMode::SaveShapeSelect => " SHAPE  ",
         AppMode::DocSearching => " DOC /  ",
         AppMode::PathInput => " GOTO   ",
+        AppMode::QueryInput => " QUERY  ",
         AppMode::OpenAsSelect => " OPEN AS",
         AppMode::YPrefix => " COPY    ",
         AppMode::CopyFormatSelect => " COPY-FMT",

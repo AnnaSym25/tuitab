@@ -86,6 +86,8 @@ pub enum AppMode {
     DocSearching,
     /// Typing a document path to jump to (`gp`)
     PathInput,
+    /// Typing a jq program to run over the document (`gq`)
+    QueryInput,
 }
 
 /// Distinguishes a regular data sheet from derived views.
@@ -258,6 +260,17 @@ pub enum Action {
     PathCursorRight,
     PathCursorStart,
     PathCursorEnd,
+    /// Run a jq program over the document and open the result (`gq`)
+    StartQuery,
+    ApplyQuery,
+    CancelQuery,
+    QueryInputChar(char),
+    QueryBackspace,
+    QueryForwardDelete,
+    QueryCursorLeft,
+    QueryCursorRight,
+    QueryCursorStart,
+    QueryCursorEnd,
     /// Move the highlight in a single-choice popup
     ChoiceUp,
     ChoiceDown,

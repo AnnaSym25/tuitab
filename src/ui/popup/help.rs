@@ -96,6 +96,7 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect) {
         Line::from("  zEnter           Dive into the cell's node"),
         Line::from("  g/               Search the whole document → hit list"),
         Line::from("  gp               Go to a node by its path"),
+        Line::from("  gq               Run a jq query → new sheet"),
         Line::from("  m                Cycle records / key-value / scalars"),
         Line::from("  ( / )            Expand / fold a nested column"),
         Line::from("  zo               Open file as format (directory sheet)"),

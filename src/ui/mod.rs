@@ -76,7 +76,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         | AppMode::SaveShapeSelect
         | AppMode::OpenAsSelect
         | AppMode::DocSearching
-        | AppMode::PathInput => {
+        | AppMode::PathInput
+        | AppMode::QueryInput => {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -259,6 +260,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             }
             if app.mode == AppMode::CopyFormatSelect {
                 popup::render_copy_format_popup(frame, app, frame.area());
+            }
+            if app.mode == AppMode::QueryInput {
+                popup::render_input_popup(
+                    frame,
+                    "jq query (e.g. .[] | select(.ok)) — Enter to run, Esc to cancel",
+                    &app.stack.active().query_input,
+                    None,
+                    frame.area(),
+                );
             }
             if app.mode == AppMode::PathInput {
                 popup::render_input_popup(

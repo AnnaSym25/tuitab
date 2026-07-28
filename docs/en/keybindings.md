@@ -167,6 +167,7 @@ all still defaults to CSV, and is only re-read as JSON when it starts with `[` o
 | `q` / `Esc` | Go back up one level |
 | `g/` | Search the whole document — see below |
 | `gp` | Go to a node by its document path |
+| `gq` | Run a jq query and open its result as a sheet |
 | `m` | Cycle the layout: records / key-value / scalars |
 | `(` | Expand the cursor column of containers into `parent.key` / `parent[0]` columns |
 | `)` | Fold the innermost expansion back into one column |
@@ -174,6 +175,13 @@ all still defaults to CSV, and is only re-read as JSON when it starts with `[` o
 | `E` | Edit a container as text in `$EDITOR` (add, remove or reorder keys) |
 | `d` | Delete the selected rows — removes them from the document |
 | `Ctrl+S` | Save; a different extension converts the format |
+
+`gq` runs a jq program over the document — `.[] | select(.ok)`,
+`.users | to_entries | map({name: .key, age: .value.age})` — and opens the result as an
+ordinary sheet: diving, editing and saving all work on it, because the result is just
+another document. It keeps the source's format, so saving writes the kind of file you
+were already looking at, but it does not inherit the source path: `Ctrl+S` on a query
+result will not offer to overwrite what the query ran against.
 
 `/` searches what is on screen, which on a document sheet is one subtree rendered into
 cells — it cannot see a key three levels down. `g/` searches the tree itself and pushes a
