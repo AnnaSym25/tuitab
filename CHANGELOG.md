@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **JSON, JSONL/NDJSON, YAML and TOML open as a table over the real document.**
+  The table is a projection of the parsed tree, not a flattened copy: editing a cell
+  writes into the document, and saving re-serialises it, so nesting, key order and
+  TOML datetimes survive.
+- Converting between the structured formats is a different extension on save —
+  `config.toml` saved as `config.yaml`. A conversion that cannot carry everything says
+  so in the status line.
+- **A TOML file saved back as TOML keeps its comments and layout**, because it is
+  written through its own source rather than rebuilt.
+- `Enter` / `zEnter` dive into the node of the current row or cell; `q`/`Esc` comes
+  back. Sheets in a dive chain share one document, so an edit three levels down is
+  there when you return, and `U` undoes it at any level.
+- `m` cycles how a node is projected: records, key/value, scalars. An object or a TOML
+  document opens as key/value rows rather than one very wide row.
+- `(` / `)` expand a nested column into `parent.key` / `parent[0]` columns and fold it
+  back. Expanding is a view operation — the saved file keeps its real nesting, and
+  expanded cells stay editable.
+- `E` on a container cell opens its real subtree in `$EDITOR`, which is how keys are
+  added, removed and reordered. If the result does not parse, nothing is written and
+  the typed text is kept.
+- `g/` searches the whole document rather than the rows on screen and lists the hits
+  with their paths; `Enter` opens the node with the cursor on the match.
+- `gp` jumps to a node by its path, `yp` copies the path of the current cell, and the
+  status line shows it when there is nothing more urgent to report.
+- `gq` runs a jq query and opens the result as a sheet of its own.
+- `zo` on a directory listing reopens a file as an explicitly chosen format, and a file
+  with an unhelpful extension is identified by its contents.
+- Saving a plain table to a structured format asks which shape to produce — records,
+  columns, or key/value — and remembers the answer.
+- `--type` now also forces a format for a file, not just for stdin.
+
+### Changed
+
+- JSON no longer goes through the Polars reader, which flattened nesting on save.
+- Release binaries are stripped, taking them from 121 MB to 97 MB.
+- Operations that would reshape the table without a matching change in the document —
+  paste, computed columns, the `z` column operations — are refused on a document sheet
+  and point at `E`. Deleting rows, which is a change to the data, removes the array
+  element or the key.
+
+### Fixed
+
+- Upgraded calamine, which moves the `.xlsx` parser to a quick-xml without the
+  known denial-of-service advisories.
+
 ## [0.4.3] - 2026-06-14
 
 ### Changed
