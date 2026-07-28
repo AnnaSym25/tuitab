@@ -70,7 +70,10 @@ pub fn run_jq(root: &Node, program: &str) -> Result<Node> {
     }
 
     match outputs.len() {
-        0 => Err(eyre!("`{program}` produced no output")),
+        // No output is a legitimate jq result — `select` that matches nothing is the
+        // usual way to ask "are there any?" — so it opens an empty sheet rather than
+        // erroring.  Only a program that cannot run is a failure.
+        0 => Ok(Node::Arr(Vec::new())),
         1 => Ok(outputs.pop().expect("length checked")),
         _ => Ok(Node::Arr(outputs)),
     }
@@ -130,9 +133,12 @@ mod tests {
         let r = root("[1,2]");
         assert!(run_jq(&r, ".[ | broken").is_err());
         assert!(run_jq(&r, "").is_err());
-        // a legal program that matches nothing is an error too: an empty sheet says
-        // less than a message does
-        assert!(run_jq(&r, ".[] | select(. > 99)").is_err());
+    }
+
+    #[test]
+    fn a_program_matching_nothing_yields_an_empty_result_not_an_error() {
+        let r = root("[1,2]");
+        assert_eq!(run_jq(&r, ".[] | select(. > 99)").unwrap(), Node::Arr(vec![]));
     }
 
     #[test]

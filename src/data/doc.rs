@@ -85,7 +85,7 @@ pub fn sniff(text: &str, bracket_only: bool) -> Option<Format> {
     if bracket_only {
         return None;
     }
-    if toml::from_str::<toml::Value>(text).is_ok() {
+    if text.parse::<toml_edit::DocumentMut>().is_ok() {
         return Some(Format::Toml);
     }
     // A bare scalar is not evidence of YAML — every plain text file is one.
@@ -719,6 +719,24 @@ fn node_to_item(node: &Node) -> toml_edit::Item {
             toml_edit::Item::Table(t)
         }
         Node::Null => toml_edit::Item::None,
+        // An array of tables is what `[[name]]` means; without this it would come out
+        // as one long inline array, which is legal TOML but not what anyone writes.
+        Node::Arr(items) if !items.is_empty() && items.iter().all(|n| matches!(n, Node::Obj(_))) => {
+            let mut aot = toml_edit::ArrayOfTables::new();
+            for n in items {
+                if let Node::Obj(map) = n {
+                    let mut t = toml_edit::Table::new();
+                    for (k, v) in map {
+                        if matches!(v, Node::Null) {
+                            continue;
+                        }
+                        t.insert(k, node_to_item(v));
+                    }
+                    aot.push(t);
+                }
+            }
+            toml_edit::Item::ArrayOfTables(aot)
+        }
         other => toml_edit::Item::Value(node_to_toml_value(other)),
     }
 }
@@ -800,8 +818,10 @@ fn parse_yaml(text: &str) -> Result<(Node, bool)> {
 }
 
 fn parse_toml(text: &str) -> Result<Node> {
-    let v: toml::Value = toml::from_str(text)?;
-    Ok(from_toml(v))
+    let doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|e| eyre!("{}", e))?;
+    Ok(item_to_node(doc.as_item()))
 }
 
 fn from_json(v: serde_json::Value) -> Node {
@@ -859,15 +879,43 @@ fn yaml_key_to_string(k: serde_yaml_ng::Value) -> String {
     }
 }
 
-fn from_toml(v: toml::Value) -> Node {
+fn item_to_node(item: &toml_edit::Item) -> Node {
+    match item {
+        toml_edit::Item::Value(v) => toml_value_to_node(v),
+        toml_edit::Item::Table(t) => Node::Obj(
+            t.iter()
+                .map(|(k, v)| (k.to_string(), item_to_node(v)))
+                .collect(),
+        ),
+        toml_edit::Item::ArrayOfTables(a) => Node::Arr(
+            a.iter()
+                .map(|t| {
+                    Node::Obj(
+                        t.iter()
+                            .map(|(k, v)| (k.to_string(), item_to_node(v)))
+                            .collect(),
+                    )
+                })
+                .collect(),
+        ),
+        toml_edit::Item::None => Node::Null,
+    }
+}
+
+fn toml_value_to_node(v: &toml_edit::Value) -> Node {
+    use toml_edit::Value as V;
     match v {
-        toml::Value::String(s) => Node::Str(s),
-        toml::Value::Integer(i) => Node::Int(i),
-        toml::Value::Float(f) => Node::Float(f),
-        toml::Value::Boolean(b) => Node::Bool(b),
-        toml::Value::Datetime(d) => Node::DateTime(d.to_string()),
-        toml::Value::Array(a) => Node::Arr(a.into_iter().map(from_toml).collect()),
-        toml::Value::Table(t) => Node::Obj(t.into_iter().map(|(k, v)| (k, from_toml(v))).collect()),
+        V::String(s) => Node::Str(s.value().clone()),
+        V::Integer(i) => Node::Int(*i.value()),
+        V::Float(f) => Node::Float(*f.value()),
+        V::Boolean(b) => Node::Bool(*b.value()),
+        V::Datetime(d) => Node::DateTime(d.value().to_string()),
+        V::Array(a) => Node::Arr(a.iter().map(toml_value_to_node).collect()),
+        V::InlineTable(t) => Node::Obj(
+            t.iter()
+                .map(|(k, v)| (k.to_string(), toml_value_to_node(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -914,19 +962,22 @@ pub fn serialize(root: &Node, format: Format, multi_doc: bool, opts: &SaveOpts) 
             Ok(serde_yaml_ng::to_string(&to_yaml(root))?)
         }
         Format::Toml => {
-            let v = to_toml(root)
-                .ok_or_else(|| eyre!("TOML cannot represent a null document"))?;
-            if !matches!(v, toml::Value::Table(_)) {
+            let Node::Obj(map) = root else {
                 return Err(eyre!(
                     "TOML requires a table at the top level, got {}",
                     root.type_name()
                 ));
+            };
+            // Built with the same node_to_item the source-preserving writer uses, so
+            // the two paths cannot drift apart on questions like what to do with nulls.
+            let mut doc = toml_edit::DocumentMut::new();
+            for (k, v) in map {
+                if matches!(v, Node::Null) {
+                    continue;
+                }
+                doc.insert(k, node_to_item(v));
             }
-            Ok(if opts.indent {
-                toml::to_string_pretty(&v)?
-            } else {
-                toml::to_string(&v)?
-            })
+            Ok(doc.to_string())
         }
     }
 }
@@ -974,27 +1025,6 @@ fn to_yaml(n: &Node) -> serde_yaml_ng::Value {
     }
 }
 
-/// TOML has no null.  A null value returns `None`, and callers drop the key (objects)
-/// or the element (arrays) — the same choice VisiData makes with `keep_nulls=False`.
-fn to_toml(n: &Node) -> Option<toml::Value> {
-    Some(match n {
-        Node::Null => return None,
-        Node::Bool(b) => toml::Value::Boolean(*b),
-        Node::Int(i) => toml::Value::Integer(*i),
-        Node::Float(f) => toml::Value::Float(*f),
-        Node::Str(s) => toml::Value::String(s.clone()),
-        Node::DateTime(s) => match s.parse::<toml::value::Datetime>() {
-            Ok(d) => toml::Value::Datetime(d),
-            Err(_) => toml::Value::String(s.clone()),
-        },
-        Node::Arr(v) => toml::Value::Array(v.iter().filter_map(to_toml).collect()),
-        Node::Obj(m) => toml::Value::Table(
-            m.iter()
-                .filter_map(|(k, v)| to_toml(v).map(|v| (k.clone(), v)))
-                .collect(),
-        ),
-    })
-}
 
 #[cfg(test)]
 mod tests {

@@ -391,7 +391,11 @@ impl App {
                     format,
                 ));
                 self.stack.push(sheet);
-                self.status_message = format!("{} rows", rows);
+                self.status_message = if rows == 0 {
+                    "no matches".to_string()
+                } else {
+                    format!("{} rows", rows)
+                };
             }
             Err(e) => self.status_message = format!("Query failed: {}", e),
         }

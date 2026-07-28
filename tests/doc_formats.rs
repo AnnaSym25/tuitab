@@ -1398,6 +1398,24 @@ fn a_jq_query_can_reshape_a_document_into_a_table() {
     assert_eq!(s.doc.as_ref().unwrap().format(), Format::Yaml, "keeps the source format");
 }
 
+/// A program that matches nothing opens an empty sheet — `select` finding no rows is a
+/// legitimate answer, not a failure.
+#[test]
+fn a_query_matching_nothing_opens_an_empty_sheet() {
+    use tuitab::types::Action;
+
+    let mut app = tuitab::app::App::new(&fixture("nested.json"), None).unwrap();
+    let depth = app.stack.depth();
+    app.handle_action(Action::StartQuery);
+    app.stack.active_mut().query_input =
+        tuitab::ui::text_input::TextInput::with_value(".[] | select(.id == 999)".into());
+    app.handle_action(Action::ApplyQuery);
+
+    assert_eq!(app.stack.depth(), depth + 1, "{}", app.status_message);
+    assert_eq!(app.stack.active().dataframe.visible_row_count(), 0);
+    assert!(app.status_message.contains("no matches"), "{}", app.status_message);
+}
+
 /// A broken program says so and pushes nothing.
 #[test]
 fn a_failing_query_reports_and_pushes_nothing() {
@@ -1406,7 +1424,7 @@ fn a_failing_query_reports_and_pushes_nothing() {
     let mut app = tuitab::app::App::new(&fixture("nested.json"), None).unwrap();
     let depth = app.stack.depth();
 
-    for program in [".[ | broken", ".[] | select(.nope == 42)"] {
+    for program in [".[ | broken", ".a | .[0]"] {
         app.handle_action(Action::StartQuery);
         app.stack.active_mut().query_input =
             tuitab::ui::text_input::TextInput::with_value(program.into());
