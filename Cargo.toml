@@ -81,3 +81,7 @@ opt-level = 2
 [profile.release]
 opt-level = 3
 lto = "thin"
+# 17% of the binary is local symbols.  Dropping them costs symbol names in panic
+# backtraces; the error chain color-eyre prints is unaffected, and packagers strip
+# anyway.  Set to false when bisecting a crash.
+strip = "symbols"
