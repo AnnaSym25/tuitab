@@ -65,12 +65,16 @@ jobs:
       - run: cargo install cargo-audit --locked
       - name: Run cargo audit
         run: |
-          # RUSTSEC-2026-0194/0195: quick-xml denial-of-service advisories, reached only
-          # through object_store inside polars, which parses S3 and Azure listing
-          # responses. tuitab opens local files only, so the code is unreachable; the
-          # copy that matters — calamine's, for .xlsx — is on a fixed version. polars
-          # 0.54 does NOT help — it still pulls object_store 0.13 with the same
-          # quick-xml. Re-check when object_store itself moves past it.
+          # RUSTSEC-2026-0194/0195: quick-xml denial-of-service advisories in XML parsing
+          # of S3/Azure listing responses. Reached through
+          #   polars/csv -> polars-stream -> polars-io/file_cache -> cloud
+          #   -> object_store 0.13 -> quick-xml ^0.39
+          # so it cannot be turned off without giving up CSV support, and ^0.39 cannot
+          # resolve to the fixed 0.41 (0.39.4 is the last of its line, no backport).
+          # polars 0.54 does not help — same object_store. object_store 0.14 DOES use
+          # quick-xml 0.41, so the fix is one dependency bump inside polars; no released
+          # polars has it yet. tuitab never makes a cloud request, so the code is linked
+          # but never called. Drop these two the moment polars ships object_store 0.14.
           cargo audit \
             --ignore RUSTSEC-2025-0141 \
             --ignore RUSTSEC-2026-0194 \
