@@ -184,9 +184,7 @@ fn a_toml_file_renders_as_key_value_rows_in_the_real_ui() {
 
     let mut app = tuitab::app::App::new(&fixture("app.toml"), None).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
-    terminal
-        .draw(|f| tuitab::ui::render(f, &mut app))
-        .unwrap();
+    terminal.draw(|f| tuitab::ui::render(f, &mut app)).unwrap();
 
     let screen: String = terminal
         .backend()
@@ -196,7 +194,15 @@ fn a_toml_file_renders_as_key_value_rows_in_the_real_ui() {
         .map(|c| c.symbol())
         .collect();
 
-    for expected in ["key", "value", "type", "port", "8080", "datetime", "{2} host=localhost"] {
+    for expected in [
+        "key",
+        "value",
+        "type",
+        "port",
+        "8080",
+        "datetime",
+        "{2} host=localhost",
+    ] {
         assert!(
             screen.contains(expected),
             "expected `{}` on screen:\n{}",
@@ -216,10 +222,12 @@ fn enter_dives_into_a_nested_node_and_esc_pops_back() {
     let root_title = app.stack.active().title.clone();
 
     // walk down to the `servers` row
-    while app.stack.active().dataframe.get_physical(
-        app.stack.active().table_state.selected().unwrap_or(0),
-        0,
-    ) != "servers"
+    while app
+        .stack
+        .active()
+        .dataframe
+        .get_physical(app.stack.active().table_state.selected().unwrap_or(0), 0)
+        != "servers"
     {
         app.handle_action(Action::MoveDown);
     }
@@ -346,7 +354,11 @@ fn a_key_named_value_is_not_mistaken_for_the_bare_column() {
     let doc = Doc::from_str(r#"[{"value":"real"}, 7]"#, Format::Json).unwrap();
     let (df, mut state) = DocState::from_doc(doc).unwrap();
     let names: Vec<&str> = df.columns.iter().map(|c| c.name.as_str()).collect();
-    assert_eq!(names, vec!["value_1", "value"], "the synthetic column is renamed");
+    assert_eq!(
+        names,
+        vec!["value_1", "value"],
+        "the synthetic column is renamed"
+    );
 
     // editing the real `value` key must change only that key, not the whole row
     state.set_cell(0, 1, "changed").unwrap();
@@ -390,7 +402,11 @@ fn expand_and_contract_a_nested_column_from_the_app() {
         .collect();
     assert!(names.contains(&"meta.ok".to_string()), "{:?}", names);
     assert!(names.contains(&"meta.note".to_string()), "{:?}", names);
-    assert!(!names.contains(&"meta".to_string()), "parent is replaced: {:?}", names);
+    assert!(
+        !names.contains(&"meta".to_string()),
+        "parent is replaced: {:?}",
+        names
+    );
 
     // an expanded cell is editable, and the edit lands on the real nested node
     let ok_col = names.iter().position(|n| n == "meta.ok").unwrap();
@@ -403,11 +419,11 @@ fn expand_and_contract_a_nested_column_from_the_app() {
     app.handle_action(Action::ApplyEdit);
     let doc = app.stack.active().doc.as_ref().unwrap();
     assert_eq!(
-        doc.doc
-            .read()
-            .unwrap()
-            .root
-            .get(&[Seg::Idx(0), Seg::Key("meta".into()), Seg::Key("ok".into())]),
+        doc.doc.read().unwrap().root.get(&[
+            Seg::Idx(0),
+            Seg::Key("meta".into()),
+            Seg::Key("ok".into())
+        ]),
         Some(&tuitab::data::doc::Node::Bool(false)),
         "editing an expanded column must write into the nested node"
     );
@@ -422,7 +438,11 @@ fn expand_and_contract_a_nested_column_from_the_app() {
         .iter()
         .map(|c| c.name.clone())
         .collect();
-    assert!(names.contains(&"meta".to_string()), "folded back: {:?}", names);
+    assert!(
+        names.contains(&"meta".to_string()),
+        "folded back: {:?}",
+        names
+    );
 }
 
 /// Expansion survives a reprojection — it lives on the view, not on the columns.
@@ -488,7 +508,11 @@ fn expanding_columns_does_not_leak_into_the_saved_file() {
     .unwrap();
     let json = std::fs::read_to_string(&path).unwrap();
     assert!(json.contains("\"meta\""), "nesting is preserved: {}", json);
-    assert!(!json.contains("meta.ok"), "must not flatten on save: {}", json);
+    assert!(
+        !json.contains("meta.ok"),
+        "must not flatten on save: {}",
+        json
+    );
 }
 
 /// Undo must never leave the table and the cell→node mapping describing different
@@ -503,7 +527,12 @@ fn undo_after_expanding_keeps_the_table_and_the_node_mapping_in_step() {
     {
         let s = app.stack.active_mut();
         s.edit_row = 0;
-        s.edit_col = s.dataframe.columns.iter().position(|c| c.name == "name").unwrap();
+        s.edit_col = s
+            .dataframe
+            .columns
+            .iter()
+            .position(|c| c.name == "name")
+            .unwrap();
         s.edit_input = tuitab::ui::text_input::TextInput::with_value("ALPHA".into());
     }
     app.handle_action(Action::ApplyEdit);
@@ -530,7 +559,12 @@ fn undo_after_expanding_keeps_the_table_and_the_node_mapping_in_step() {
     assert_eq!(doc.row_paths.len(), s.dataframe.df.height());
 
     // and the undo actually reverted the document edit
-    let name_col = s.dataframe.columns.iter().position(|c| c.name == "name").unwrap();
+    let name_col = s
+        .dataframe
+        .columns
+        .iter()
+        .position(|c| c.name == "name")
+        .unwrap();
     assert_eq!(s.dataframe.get_physical(0, name_col), "alpha");
 }
 
@@ -616,7 +650,11 @@ fn a_large_json_loaded_in_the_background_keeps_its_document() {
 
     let out_path = out("big-out.json");
     save_file_as(&df, Some(&doc), &out_path, Shape::Records, "big").unwrap();
-    let head: String = std::fs::read_to_string(&out_path).unwrap().chars().take(200).collect();
+    let head: String = std::fs::read_to_string(&out_path)
+        .unwrap()
+        .chars()
+        .take(200)
+        .collect();
     assert!(head.contains("\"meta\""), "nesting must survive: {}", head);
 
     let _ = std::fs::remove_file(&path);
@@ -684,12 +722,14 @@ fn saving_a_plain_table_asks_for_a_shape() {
     let _ = std::fs::remove_file(&target); // a leftover from an earlier run would mask the check
 
     app.handle_action(Action::SaveFile);
-    app.save.input = tuitab::ui::text_input::TextInput::with_value(
-        target.to_string_lossy().into_owned(),
-    );
+    app.save.input =
+        tuitab::ui::text_input::TextInput::with_value(target.to_string_lossy().into_owned());
     app.handle_action(Action::ApplySave);
     assert_eq!(app.mode, AppMode::SaveShapeSelect, "must ask first");
-    assert!(!target.exists(), "nothing written until the shape is chosen");
+    assert!(
+        !target.exists(),
+        "nothing written until the shape is chosen"
+    );
 
     // pick `columns` (the second option) and confirm
     app.handle_action(Action::ChoiceDown);
@@ -703,9 +743,8 @@ fn saving_a_plain_table_asks_for_a_shape() {
     // saving again lands on the remembered shape
     let second = out("shape-choice-2.json");
     app.handle_action(Action::SaveFile);
-    app.save.input = tuitab::ui::text_input::TextInput::with_value(
-        second.to_string_lossy().into_owned(),
-    );
+    app.save.input =
+        tuitab::ui::text_input::TextInput::with_value(second.to_string_lossy().into_owned());
     app.handle_action(Action::ApplySave);
     assert_eq!(app.mode, AppMode::SaveShapeSelect);
     app.handle_action(Action::ApplySaveShape);
@@ -747,7 +786,11 @@ fn the_remembered_shape_survives_a_shorter_option_list() {
         tuitab::ui::text_input::TextInput::with_value(wide.to_string_lossy().into_owned());
     app.handle_action(Action::ApplySave);
     assert_eq!(app.mode, AppMode::SaveShapeSelect);
-    assert_eq!(app.save.shapes.len(), 2, "key/value needs exactly 2 columns");
+    assert_eq!(
+        app.save.shapes.len(),
+        2,
+        "key/value needs exactly 2 columns"
+    );
     assert_eq!(app.save.shape_index, 0, "falls back to the first option");
     app.handle_action(Action::ApplySaveShape);
     assert_eq!(app.save.shape, Shape::Records);
@@ -763,12 +806,13 @@ fn saving_a_document_sheet_does_not_ask_for_a_shape() {
     let mut app = tuitab::app::App::new(&fixture("app.toml"), None).unwrap();
     let target = out("no-shape-question.yaml");
     app.handle_action(Action::SaveFile);
-    app.save.input = tuitab::ui::text_input::TextInput::with_value(
-        target.to_string_lossy().into_owned(),
-    );
+    app.save.input =
+        tuitab::ui::text_input::TextInput::with_value(target.to_string_lossy().into_owned());
     app.handle_action(Action::ApplySave);
     assert_eq!(app.mode, AppMode::Normal, "{}", app.status_message);
-    assert!(std::fs::read_to_string(&target).unwrap().contains("host: localhost"));
+    assert!(std::fs::read_to_string(&target)
+        .unwrap()
+        .contains("host: localhost"));
 }
 
 /// `zo` on a directory listing reopens the selected file as an explicitly chosen format,
@@ -879,7 +923,11 @@ fn deleting_rows_removes_them_from_the_document() {
         tuitab::ui::text_input::TextInput::with_value(path.to_string_lossy().into_owned());
     app.handle_action(Action::ApplySave);
     let text = std::fs::read_to_string(&path).unwrap();
-    assert!(!text.contains("\"id\": 1"), "deleted rows stay deleted: {}", text);
+    assert!(
+        !text.contains("\"id\": 1"),
+        "deleted rows stay deleted: {}",
+        text
+    );
     assert!(text.contains("\"id\": 2"), "{}", text);
 
     // and undo brings them back, document and table together
@@ -926,7 +974,11 @@ fn table_reshaping_operations_are_refused_on_a_doc_sheet() {
     let mut app = tuitab::app::App::new(&fixture("nested.json"), None).unwrap();
     let before = app.stack.active().dataframe.columns.len();
 
-    for action in [Action::StartExpression, Action::CreatePctColumn, Action::PasteRows] {
+    for action in [
+        Action::StartExpression,
+        Action::CreatePctColumn,
+        Action::PasteRows,
+    ] {
         app.handle_action(action.clone());
         assert_eq!(
             app.stack.active().dataframe.columns.len(),
@@ -965,7 +1017,11 @@ fn a_lossy_conversion_is_named_in_the_status_line() {
     app.save.input =
         tuitab::ui::text_input::TextInput::with_value(yaml.to_string_lossy().into_owned());
     app.handle_action(Action::ApplySave);
-    assert!(app.status_message.contains("comments"), "{}", app.status_message);
+    assert!(
+        app.status_message.contains("comments"),
+        "{}",
+        app.status_message
+    );
 
     // and a conversion that loses nothing stays quiet
     app.handle_action(Action::SaveFile);
@@ -973,7 +1029,11 @@ fn a_lossy_conversion_is_named_in_the_status_line() {
     app.save.input =
         tuitab::ui::text_input::TextInput::with_value(toml.to_string_lossy().into_owned());
     app.handle_action(Action::ApplySave);
-    assert!(!app.status_message.contains("note:"), "{}", app.status_message);
+    assert!(
+        !app.status_message.contains("note:"),
+        "{}",
+        app.status_message
+    );
 }
 
 /// The path of the cell under the cursor is on screen whenever there is nothing more
@@ -1034,8 +1094,13 @@ fn deleting_rows_from_a_sorted_view_leaves_no_stale_sort() {
 
     app.stack.active_mut().cursor_col = 0;
     app.handle_action(Action::SortAscending);
-    assert_eq!(app.stack.active().dataframe.get_physical(
-        app.stack.active().dataframe.row_order[0], 0), "1");
+    assert_eq!(
+        app.stack
+            .active()
+            .dataframe
+            .get_physical(app.stack.active().dataframe.row_order[0], 0),
+        "1"
+    );
 
     // delete the physical row holding 1, so the tree order (3, 2) no longer matches
     // what an ascending sort would produce (2, 3)
@@ -1068,9 +1133,21 @@ fn deleting_from_a_scalar_view_removes_the_element() {
     app.handle_action(Action::DeleteSelectedRows);
 
     let sheet = app.stack.active();
-    assert_eq!(sheet.dataframe.visible_row_count(), 2, "{}", app.status_message);
+    assert_eq!(
+        sheet.dataframe.visible_row_count(),
+        2,
+        "{}",
+        app.status_message
+    );
     let target = out("scalar-delete-out.json");
-    save_file_as(&sheet.dataframe, sheet.doc.as_ref(), &target, Shape::Records, "x").unwrap();
+    save_file_as(
+        &sheet.dataframe,
+        sheet.doc.as_ref(),
+        &target,
+        Shape::Records,
+        "x",
+    )
+    .unwrap();
     let text = std::fs::read_to_string(&target).unwrap();
     assert!(!text.contains("20"), "{}", text);
     assert!(text.contains("10") && text.contains("30"), "{}", text);
@@ -1102,12 +1179,21 @@ fn document_search_finds_nodes_that_are_not_on_screen() {
 
     let s = app.stack.active();
     assert!(s.doc_hits.is_some(), "a results sheet was pushed");
-    let names: Vec<&str> = s.dataframe.columns.iter().map(|c| c.name.as_str()).collect();
+    let names: Vec<&str> = s
+        .dataframe
+        .columns
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
     assert_eq!(names, vec!["path", "value", "type", "matched"]);
     assert_eq!(s.dataframe.visible_row_count(), 2, "the owner and the tag");
     let paths: Vec<String> = (0..2).map(|r| s.dataframe.get_physical(r, 0)).collect();
     assert!(paths.contains(&"[0].meta.owner".to_string()), "{:?}", paths);
-    assert!(paths.contains(&"[1].meta.tags[0]".to_string()), "{:?}", paths);
+    assert!(
+        paths.contains(&"[1].meta.tags[0]".to_string()),
+        "{:?}",
+        paths
+    );
 
     // Enter on a hit opens the node's parent, with the cursor on the match
     app.stack.active_mut().table_state.select(Some(
@@ -1129,7 +1215,8 @@ fn document_search_finds_nodes_that_are_not_on_screen() {
     // the cursor is on the match, not merely somewhere on the sheet
     let cursor_row = s.table_state.selected().unwrap();
     assert_eq!(
-        s.dataframe.get_physical(s.dataframe.row_order[cursor_row], 0),
+        s.dataframe
+            .get_physical(s.dataframe.row_order[cursor_row], 0),
         "owner"
     );
 }
@@ -1168,7 +1255,11 @@ fn document_search_with_no_match_pushes_nothing() {
     }
     app.handle_action(Action::ApplyDocSearch);
     assert_eq!(app.stack.depth(), depth, "no sheet for no results");
-    assert!(app.status_message.contains("No match"), "{}", app.status_message);
+    assert!(
+        app.status_message.contains("No match"),
+        "{}",
+        app.status_message
+    );
 }
 
 /// A hit list is a snapshot of paths. If the document changes underneath it, those paths
@@ -1179,11 +1270,7 @@ fn a_hit_list_does_not_navigate_after_the_document_changed() {
     use tuitab::types::Action;
 
     let path = out("stale-hits.json");
-    std::fs::write(
-        &path,
-        r#"[{"tag":"keep"},{"tag":"keep"},{"tag":"needle"}]"#,
-    )
-    .unwrap();
+    std::fs::write(&path, r#"[{"tag":"keep"},{"tag":"keep"},{"tag":"needle"}]"#).unwrap();
     let mut app = tuitab::app::App::new(&path, None).unwrap();
 
     app.handle_action(Action::StartDocSearch);
@@ -1216,7 +1303,11 @@ fn a_stale_hit_refuses_rather_than_opening_the_wrong_node() {
     use tuitab::types::Action;
 
     let path = out("stale-hits-2.json");
-    std::fs::write(&path, r#"[{"tag":"a"},{"tag":"b"},{"tag":"needle"},{"tag":"d"}]"#).unwrap();
+    std::fs::write(
+        &path,
+        r#"[{"tag":"a"},{"tag":"b"},{"tag":"needle"},{"tag":"d"}]"#,
+    )
+    .unwrap();
     let mut app = tuitab::app::App::new(&path, None).unwrap();
 
     app.handle_action(Action::StartDocSearch);
@@ -1247,7 +1338,6 @@ fn a_stale_hit_refuses_rather_than_opening_the_wrong_node() {
     );
 }
 
-
 /// `gp` jumps to a node by its path — the same text `yp` copies and the status line
 /// shows, so the three agree.
 #[test]
@@ -1276,7 +1366,10 @@ fn goto_path_jumps_to_the_node_and_reports_a_wrong_path_usefully() {
     );
     // cursor sits on the addressed key
     let row = s.table_state.selected().unwrap();
-    assert_eq!(s.dataframe.get_physical(s.dataframe.row_order[row], 0), "host");
+    assert_eq!(
+        s.dataframe.get_physical(s.dataframe.row_order[row], 0),
+        "host"
+    );
 
     // a key that needs quoting round-trips
     app.handle_action(Action::PopSheet);
@@ -1324,7 +1417,11 @@ fn goto_path_jumps_to_the_node_and_reports_a_wrong_path_usefully() {
     app.stack.active_mut().path_input =
         tuitab::ui::text_input::TextInput::with_value("servers[1".into());
     app.handle_action(Action::ApplyPathGoto);
-    assert!(app.status_message.contains("Bad path"), "{}", app.status_message);
+    assert!(
+        app.status_message.contains("Bad path"),
+        "{}",
+        app.status_message
+    );
 }
 
 /// `gq` runs a jq program and opens the result as an ordinary sheet — diving, editing
@@ -1371,7 +1468,11 @@ fn a_jq_query_opens_its_result_as_a_sheet() {
     )
     .unwrap();
     let text = std::fs::read_to_string(&target).unwrap();
-    assert!(text.contains("\"n\": 1") && text.contains("\"n\": 3"), "{}", text);
+    assert!(
+        text.contains("\"n\": 1") && text.contains("\"n\": 3"),
+        "{}",
+        text
+    );
     assert!(!text.contains("\"n\": 2"), "{}", text);
 }
 
@@ -1382,7 +1483,11 @@ fn a_jq_query_can_reshape_a_document_into_a_table() {
     use tuitab::types::Action;
 
     let path = out("reshape.yaml");
-    std::fs::write(&path, "users:\n  alice:\n    age: 30\n  bob:\n    age: 40\n").unwrap();
+    std::fs::write(
+        &path,
+        "users:\n  alice:\n    age: 30\n  bob:\n    age: 40\n",
+    )
+    .unwrap();
     let mut app = tuitab::app::App::new(&path, None).unwrap();
 
     app.handle_action(Action::StartQuery);
@@ -1392,10 +1497,19 @@ fn a_jq_query_can_reshape_a_document_into_a_table() {
     app.handle_action(Action::ApplyQuery);
 
     let s = app.stack.active();
-    let names: Vec<&str> = s.dataframe.columns.iter().map(|c| c.name.as_str()).collect();
+    let names: Vec<&str> = s
+        .dataframe
+        .columns
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
     assert_eq!(names, vec!["name", "age"], "{}", app.status_message);
     assert_eq!(s.dataframe.visible_row_count(), 2);
-    assert_eq!(s.doc.as_ref().unwrap().format(), Format::Yaml, "keeps the source format");
+    assert_eq!(
+        s.doc.as_ref().unwrap().format(),
+        Format::Yaml,
+        "keeps the source format"
+    );
 }
 
 /// A program that matches nothing opens an empty sheet — `select` finding no rows is a
@@ -1413,7 +1527,11 @@ fn a_query_matching_nothing_opens_an_empty_sheet() {
 
     assert_eq!(app.stack.depth(), depth + 1, "{}", app.status_message);
     assert_eq!(app.stack.active().dataframe.visible_row_count(), 0);
-    assert!(app.status_message.contains("no matches"), "{}", app.status_message);
+    assert!(
+        app.status_message.contains("no matches"),
+        "{}",
+        app.status_message
+    );
 }
 
 /// A broken program says so and pushes nothing.
@@ -1547,7 +1665,11 @@ fn multi_line_values_survive_the_table_and_the_editor() {
         .position(|c| c.name == "sql")
         .unwrap();
     let before = app.stack.active().dataframe.get_physical(0, sql);
-    assert!(before.contains('\n'), "the cell holds the real value: {:?}", before);
+    assert!(
+        before.contains('\n'),
+        "the cell holds the real value: {:?}",
+        before
+    );
 
     // confirm an edit without changing anything: the newlines must still be there
     {
@@ -1610,7 +1732,10 @@ fn expanding_deep_nesting_keeps_cells_addressable() {
         "{:?}",
         names
     );
-    let col = names.iter().position(|n| n == "config.defaults.custom").unwrap();
+    let col = names
+        .iter()
+        .position(|n| n == "config.defaults.custom")
+        .unwrap();
     assert_eq!(
         s.doc.as_ref().unwrap().path_of(0, col),
         Some(parse_path("panels[0].config.defaults.custom").unwrap())
@@ -1622,4 +1747,21 @@ fn expanding_deep_nesting_keeps_cells_addressable() {
         s.doc.as_ref().unwrap().node_at(1, d),
         Some(Node::Str(_))
     ));
+}
+
+/// The xlsx path has no fixture and is otherwise only compile-checked; this writes one
+/// with the app's own writer and reads it back, so a calamine upgrade cannot break
+/// Excel support silently.
+#[test]
+fn an_xlsx_written_by_tuitab_reads_back() {
+    let (df, _) = load_file_with_doc(&fixture("prices.csv"), None).unwrap();
+    let path = out("roundtrip.xlsx");
+    let _ = std::fs::remove_file(&path);
+    save_file_as(&df, None, &path, Shape::Records, "prices").unwrap();
+
+    let (back, doc) = load_file_with_doc(&path, None).unwrap();
+    assert!(doc.is_none(), "xlsx is tabular, not a document");
+    assert_eq!(back.col_count(), df.col_count());
+    assert_eq!(back.visible_row_count(), df.visible_row_count());
+    assert_eq!(back.get_physical(0, 1), df.get_physical(0, 1));
 }

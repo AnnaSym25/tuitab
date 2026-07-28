@@ -202,22 +202,22 @@ impl App {
                 .to_lowercase();
 
             // For multi-sheet xlsx: load sheet overview instead of first sheet
-            let (dataframe, doc, xlsx_db) = if matches!(ext.as_str(), "xlsx" | "xls" | "xlsm" | "xlsb")
-            {
-                match crate::data::io::excel_sheet_names(path) {
-                    Ok(names) if names.len() > 1 => {
-                        let df = crate::data::io::load_excel_overview(path)?;
-                        (df, None, Some(path.to_path_buf()))
+            let (dataframe, doc, xlsx_db) =
+                if matches!(ext.as_str(), "xlsx" | "xls" | "xlsm" | "xlsb") {
+                    match crate::data::io::excel_sheet_names(path) {
+                        Ok(names) if names.len() > 1 => {
+                            let df = crate::data::io::load_excel_overview(path)?;
+                            (df, None, Some(path.to_path_buf()))
+                        }
+                        _ => {
+                            let (df, doc) = crate::data::io::load_file_with_doc(path, delim_byte)?;
+                            (df, doc, None)
+                        }
                     }
-                    _ => {
-                        let (df, doc) = crate::data::io::load_file_with_doc(path, delim_byte)?;
-                        (df, doc, None)
-                    }
-                }
-            } else {
-                let (df, doc) = crate::data::io::load_file_as(path, delim_byte, forced_format)?;
-                (df, doc, None)
-            };
+                } else {
+                    let (df, doc) = crate::data::io::load_file_as(path, delim_byte, forced_format)?;
+                    (df, doc, None)
+                };
 
             let row_count = dataframe.visible_row_count();
             let mut root_sheet = Sheet::new(filename.clone(), dataframe);
@@ -263,8 +263,7 @@ impl App {
     /// `delimiter` overrides auto-detection for CSV/TSV input.
     pub fn from_stdin_typed(data_type: &str, delimiter: Option<char>) -> Result<Self> {
         let delim_byte = delimiter.map(|c| c as u8);
-        let (dataframe, doc) =
-            crate::data::io::load_from_stdin_with_doc(data_type, delim_byte)?;
+        let (dataframe, doc) = crate::data::io::load_from_stdin_with_doc(data_type, delim_byte)?;
         let row_count = dataframe.visible_row_count();
         let title = "stdin".to_string();
         let mut root_sheet = Sheet::new(title.clone(), dataframe);
@@ -2740,7 +2739,12 @@ impl App {
 
     /// Apply a scalar edited in `$EDITOR`, routing through the document tree when the
     /// sheet has one so the value keeps its type.
-    pub(crate) fn apply_cell_from_editor(&mut self, physical_row: usize, col: usize, new_value: String) {
+    pub(crate) fn apply_cell_from_editor(
+        &mut self,
+        physical_row: usize,
+        col: usize,
+        new_value: String,
+    ) {
         let s = self.stack.active_mut();
         s.push_undo();
 

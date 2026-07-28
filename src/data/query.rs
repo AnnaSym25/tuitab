@@ -52,7 +52,13 @@ pub fn run_jq(root: &Node, program: &str) -> Result<Node> {
     let loader = Loader::new(defs);
     let arena = Arena::default();
     let modules = loader
-        .load(&arena, File { code: program, path: () })
+        .load(
+            &arena,
+            File {
+                code: program,
+                path: (),
+            },
+        )
         .map_err(|_| eyre!("could not parse `{program}`"))?;
     let filter = Compiler::default()
         .with_funs(funs)
@@ -117,7 +123,11 @@ mod tests {
     #[test]
     fn queries_can_reshape_into_something_tabular() {
         let r = root(r#"{"users":{"alice":{"age":30},"bob":{"age":40}}}"#);
-        let out = run_jq(&r, ".users | to_entries | map({name: .key, age: .value.age})").unwrap();
+        let out = run_jq(
+            &r,
+            ".users | to_entries | map({name: .key, age: .value.age})",
+        )
+        .unwrap();
         assert_eq!(
             out.get(&[Seg::Idx(0), Seg::Key("name".into())]),
             Some(&Node::Str("alice".into()))
@@ -138,7 +148,10 @@ mod tests {
     #[test]
     fn a_program_matching_nothing_yields_an_empty_result_not_an_error() {
         let r = root("[1,2]");
-        assert_eq!(run_jq(&r, ".[] | select(. > 99)").unwrap(), Node::Arr(vec![]));
+        assert_eq!(
+            run_jq(&r, ".[] | select(. > 99)").unwrap(),
+            Node::Arr(vec![])
+        );
     }
 
     #[test]

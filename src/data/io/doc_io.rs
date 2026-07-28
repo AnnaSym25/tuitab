@@ -12,8 +12,8 @@ use crate::types::ColumnType;
 use color_eyre::{eyre::eyre, Result};
 use indexmap::IndexMap;
 use polars::prelude::AnyValue;
-use std::path::Path;
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 pub struct DocState {
@@ -52,10 +52,7 @@ impl DocState {
     /// Build a sheet anchored anywhere in a document you already hold a handle to.
     /// Used to jump straight to a search hit, where there is no parent sheet to dive
     /// from — only the tree and a path.
-    pub fn open_at(
-        doc: Arc<RwLock<Doc>>,
-        anchor: NodePath,
-    ) -> Result<(DataFrame, DocState)> {
+    pub fn open_at(doc: Arc<RwLock<Doc>>, anchor: NodePath) -> Result<(DataFrame, DocState)> {
         let view = {
             let guard = doc.read().map_err(|_| eyre!("document lock poisoned"))?;
             let node = guard
@@ -70,7 +67,10 @@ impl DocState {
     /// Open a child sheet anchored at `anchor`, sharing this document.
     pub fn dive(&self, anchor: NodePath) -> Result<(DataFrame, DocState)> {
         let view = {
-            let guard = self.doc.read().map_err(|_| eyre!("document lock poisoned"))?;
+            let guard = self
+                .doc
+                .read()
+                .map_err(|_| eyre!("document lock poisoned"))?;
             let node = guard
                 .root
                 .get(&anchor)
@@ -87,7 +87,10 @@ impl DocState {
     /// replaced or the view mode changed — a plain cell edit patches in place instead.
     pub fn reproject(&mut self) -> Result<DataFrame> {
         let proj = {
-            let guard = self.doc.read().map_err(|_| eyre!("document lock poisoned"))?;
+            let guard = self
+                .doc
+                .read()
+                .map_err(|_| eyre!("document lock poisoned"))?;
             self.view.project(&guard.root)?
         };
         self.row_paths = proj.row_paths;
@@ -142,7 +145,10 @@ impl DocState {
             _ => std::cmp::Ordering::Equal,
         });
         {
-            let mut guard = self.doc.write().map_err(|_| eyre!("document lock poisoned"))?;
+            let mut guard = self
+                .doc
+                .write()
+                .map_err(|_| eyre!("document lock poisoned"))?;
             for path in &paths {
                 guard.root.remove(path)?;
             }
@@ -212,7 +218,10 @@ impl DocState {
             .path_of(row, col)
             .ok_or_else(|| eyre!("this cell does not address a node"))?;
 
-        let mut guard = self.doc.write().map_err(|_| eyre!("document lock poisoned"))?;
+        let mut guard = self
+            .doc
+            .write()
+            .map_err(|_| eyre!("document lock poisoned"))?;
 
         if role == ColRole::Key {
             let out = rename_key(&mut guard.root, &path, text).map(|_| text.to_string());
@@ -236,7 +245,10 @@ impl DocState {
     /// Serialise the node under the cursor in the document's own format, for the
     /// "edit node as text" popup.
     pub fn node_text(&self, path: &[Seg]) -> Result<String> {
-        let guard = self.doc.read().map_err(|_| eyre!("document lock poisoned"))?;
+        let guard = self
+            .doc
+            .read()
+            .map_err(|_| eyre!("document lock poisoned"))?;
         let node = guard
             .root
             .get(path)
@@ -249,7 +261,10 @@ impl DocState {
     /// On a parse error nothing is written and the caller keeps the popup open.
     pub fn set_node_text(&mut self, path: &[Seg], text: &str) -> Result<()> {
         let fmt = {
-            let guard = self.doc.read().map_err(|_| eyre!("document lock poisoned"))?;
+            let guard = self
+                .doc
+                .read()
+                .map_err(|_| eyre!("document lock poisoned"))?;
             let node = guard
                 .root
                 .get(path)
@@ -257,7 +272,10 @@ impl DocState {
             text_edit_format(guard.format, node)
         };
         let parsed = Doc::from_str(text, fmt)?.root;
-        let mut guard = self.doc.write().map_err(|_| eyre!("document lock poisoned"))?;
+        let mut guard = self
+            .doc
+            .write()
+            .map_err(|_| eyre!("document lock poisoned"))?;
         guard.root.set(path, parsed)?;
         guard.bump();
         Ok(())
@@ -268,7 +286,10 @@ impl DocState {
     }
 
     pub fn save(&self, path: &Path, format: Format, opts: &SaveOpts) -> Result<()> {
-        let guard = self.doc.read().map_err(|_| eyre!("document lock poisoned"))?;
+        let guard = self
+            .doc
+            .read()
+            .map_err(|_| eyre!("document lock poisoned"))?;
         guard.save_as(path, format, opts)
     }
 
@@ -285,7 +306,10 @@ impl DocState {
         opts: &SaveOpts,
         name: &str,
     ) -> Result<()> {
-        let guard = self.doc.read().map_err(|_| eyre!("document lock poisoned"))?;
+        let guard = self
+            .doc
+            .read()
+            .map_err(|_| eyre!("document lock poisoned"))?;
         if format == Format::Toml && !matches!(guard.root, Node::Obj(_)) {
             let wrapped = Doc {
                 format,
@@ -417,17 +441,11 @@ impl Shape {
     }
 }
 
-
 /// Build a document from a table.
 ///
 /// `table_name` is only used for TOML, whose top level must be a table: records become
 /// an array of tables under that name.
-pub fn table_to_doc(
-    df: &DataFrame,
-    shape: Shape,
-    format: Format,
-    table_name: &str,
-) -> Result<Doc> {
+pub fn table_to_doc(df: &DataFrame, shape: Shape, format: Format, table_name: &str) -> Result<Doc> {
     let ncols = df.col_count();
     let nrows = df.visible_row_count();
     if ncols == 0 {
@@ -577,7 +595,13 @@ mod tests {
             .doc
             .read()
             .unwrap()
-            .to_string_as(Format::Json, &SaveOpts { indent: false, sort_keys: false })
+            .to_string_as(
+                Format::Json,
+                &SaveOpts {
+                    indent: false,
+                    sort_keys: false,
+                },
+            )
             .unwrap();
         assert_eq!(out.trim(), r#"[{"a":42},{"a":2}]"#);
     }
@@ -590,7 +614,13 @@ mod tests {
             .doc
             .read()
             .unwrap()
-            .to_string_as(Format::Json, &SaveOpts { indent: false, sort_keys: false })
+            .to_string_as(
+                Format::Json,
+                &SaveOpts {
+                    indent: false,
+                    sort_keys: false,
+                },
+            )
             .unwrap();
         assert_eq!(out.trim(), r#"[{"v":"2.0"}]"#, "must not become a number");
     }
@@ -636,7 +666,13 @@ mod tests {
             .doc
             .read()
             .unwrap()
-            .to_string_as(Format::Json, &SaveOpts { indent: false, sort_keys: false })
+            .to_string_as(
+                Format::Json,
+                &SaveOpts {
+                    indent: false,
+                    sort_keys: false,
+                },
+            )
             .unwrap();
         assert_eq!(out.trim(), r#"{"servers":[{"host":"b"}]}"#);
     }
@@ -645,13 +681,23 @@ mod tests {
     fn node_text_edit_replaces_a_whole_subtree() {
         let (_df, mut st) = state(r#"{"db":{"host":"h"}}"#, Format::Json);
         let path = vec![Seg::Key("db".into())];
-        assert_eq!(st.node_text(&path).unwrap().trim(), "{\n  \"host\": \"h\"\n}");
-        st.set_node_text(&path, r#"{"host":"h2","port":5432}"#).unwrap();
+        assert_eq!(
+            st.node_text(&path).unwrap().trim(),
+            "{\n  \"host\": \"h\"\n}"
+        );
+        st.set_node_text(&path, r#"{"host":"h2","port":5432}"#)
+            .unwrap();
         let out = st
             .doc
             .read()
             .unwrap()
-            .to_string_as(Format::Json, &SaveOpts { indent: false, sort_keys: false })
+            .to_string_as(
+                Format::Json,
+                &SaveOpts {
+                    indent: false,
+                    sort_keys: false,
+                },
+            )
             .unwrap();
         assert_eq!(out.trim(), r#"{"db":{"host":"h2","port":5432}}"#);
     }
@@ -665,7 +711,13 @@ mod tests {
             .doc
             .read()
             .unwrap()
-            .to_string_as(Format::Json, &SaveOpts { indent: false, sort_keys: false })
+            .to_string_as(
+                Format::Json,
+                &SaveOpts {
+                    indent: false,
+                    sort_keys: false,
+                },
+            )
             .unwrap();
         assert_eq!(out.trim(), r#"{"db":{"host":"h"}}"#);
     }
@@ -683,7 +735,9 @@ mod tests {
     fn table_to_toml_records_becomes_an_array_of_tables() {
         let (df, _) = state(r#"[{"a":1},{"a":2}]"#, Format::Json);
         let doc = table_to_doc(&df, Shape::Records, Format::Toml, "my sheet").unwrap();
-        let out = doc.to_string_as(Format::Toml, &SaveOpts::default()).unwrap();
+        let out = doc
+            .to_string_as(Format::Toml, &SaveOpts::default())
+            .unwrap();
         assert!(out.contains("[[my_sheet]]"), "{}", out);
         assert_eq!(out.matches("[[my_sheet]]").count(), 2, "{}", out);
     }
@@ -693,7 +747,13 @@ mod tests {
         let (df, _) = state(r#"[{"a":1,"b":null},{"a":2,"b":null}]"#, Format::Json);
         let doc = table_to_doc(&df, Shape::Records, Format::Json, "x").unwrap();
         let out = doc
-            .to_string_as(Format::Json, &SaveOpts { indent: false, sort_keys: false })
+            .to_string_as(
+                Format::Json,
+                &SaveOpts {
+                    indent: false,
+                    sort_keys: false,
+                },
+            )
             .unwrap();
         assert_eq!(out.trim(), r#"[{"a":1,"b":null},{"a":2}]"#);
     }

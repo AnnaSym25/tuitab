@@ -61,8 +61,17 @@ pub fn load_file_as(
     let has_ext = path.extension().is_some();
     let known_tabular = matches!(
         ext.as_str(),
-        "csv" | "tsv" | "txt" | "parquet" | "xlsx" | "xls" | "db" | "sqlite" | "sqlite3"
-            | "duckdb" | "ddb"
+        "csv"
+            | "tsv"
+            | "txt"
+            | "parquet"
+            | "xlsx"
+            | "xls"
+            | "db"
+            | "sqlite"
+            | "sqlite3"
+            | "duckdb"
+            | "ddb"
     );
     if !has_ext || !known_tabular {
         if let Ok(text) = std::fs::read_to_string(path) {

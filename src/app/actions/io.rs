@@ -111,11 +111,9 @@ impl App {
                     Ok(_) => {
                         self.mode = AppMode::Normal;
                         self.status_message = match loss {
-                            Some(note) => format!(
-                                "Saved to {} — note: {}",
-                                self.save.input.as_str(),
-                                note
-                            ),
+                            Some(note) => {
+                                format!("Saved to {} — note: {}", self.save.input.as_str(), note)
+                            }
                             None => {
                                 format!("Saved successfully to: {}", self.save.input.as_str())
                             }
@@ -167,8 +165,7 @@ impl App {
                     self.mode = AppMode::OpenAsSelect;
                 } else {
                     self.mode = AppMode::Normal;
-                    self.status_message =
-                        "Open as… works on a directory listing".to_string();
+                    self.status_message = "Open as… works on a directory listing".to_string();
                 }
                 None
             }

@@ -246,7 +246,11 @@ impl App {
             return;
         };
         let text = crate::data::doc::path_to_string(&path);
-        let text = if text.is_empty() { "(root)".to_string() } else { text };
+        let text = if text.is_empty() {
+            "(root)".to_string()
+        } else {
+            text
+        };
         match crate::clipboard::copy_text(&text) {
             Ok(()) => self.status_message = format!("Copied path: {}", text),
             Err(e) => self.status_message = format!("Copy failed: {}", e),

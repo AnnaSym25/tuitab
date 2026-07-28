@@ -144,7 +144,13 @@ impl View {
             col_roles.push(ColRole::Row);
             cells.push(
                 rows.iter()
-                    .map(|r| if matches!(r, Node::Obj(_)) { None } else { Some(*r) })
+                    .map(|r| {
+                        if matches!(r, Node::Obj(_)) {
+                            None
+                        } else {
+                            Some(*r)
+                        }
+                    })
                     .collect(),
             );
         }
@@ -320,7 +326,10 @@ fn unique_name(base: &str, taken: &IndexSet<String>) -> String {
     if !taken.contains(base) {
         return base.to_string();
     }
-    (1..).map(|n| format!("{}_{}", base, n)).find(|c| !taken.contains(c)).unwrap()
+    (1..)
+        .map(|n| format!("{}_{}", base, n))
+        .find(|c| !taken.contains(c))
+        .unwrap()
 }
 
 fn child_path(base: &[Seg], seg: Seg) -> NodePath {
@@ -447,7 +456,11 @@ mod tests {
         assert_eq!(view.mode, ViewMode::Records);
         let p = view.project(&root).unwrap();
         let names: Vec<String> = p.df.columns.iter().map(|c| c.name.clone()).collect();
-        assert_eq!(names, vec!["a", "b", "c"], "keys in order of first sighting");
+        assert_eq!(
+            names,
+            vec!["a", "b", "c"],
+            "keys in order of first sighting"
+        );
         assert_eq!(p.df.df.height(), 2);
         // second row has no `b`
         assert_eq!(p.df.get_physical(1, 1), "");
@@ -459,7 +472,10 @@ mod tests {
 
     #[test]
     fn toml_document_opens_as_key_value_rows() {
-        let root = root_of("name = \"x\"\nport = 8080\n\n[db]\nhost = \"h\"\n", Format::Toml);
+        let root = root_of(
+            "name = \"x\"\nport = 8080\n\n[db]\nhost = \"h\"\n",
+            Format::Toml,
+        );
         let view = View::auto(vec![], &root);
         assert_eq!(view.mode, ViewMode::KeyValue);
         let p = view.project(&root).unwrap();
@@ -469,8 +485,15 @@ mod tests {
         // the nested table renders compactly rather than as an empty cell
         assert_eq!(p.df.get_physical(2, 1), "{1} host=h");
         assert_eq!(p.df.get_physical(2, 2), "dict");
-        assert_eq!(cell_path(&p.row_paths, &p.col_roles, 2, 1), Some(vec![Seg::Key("db".into())]));
-        assert_eq!(cell_path(&p.row_paths, &p.col_roles, 2, 2), None, "type column addresses no node");
+        assert_eq!(
+            cell_path(&p.row_paths, &p.col_roles, 2, 1),
+            Some(vec![Seg::Key("db".into())])
+        );
+        assert_eq!(
+            cell_path(&p.row_paths, &p.col_roles, 2, 2),
+            None,
+            "type column addresses no node"
+        );
     }
 
     #[test]
@@ -497,7 +520,10 @@ mod tests {
         let p = view.project(&root).unwrap();
         assert_eq!(p.df.df.width(), 1);
         assert_eq!(p.df.df.height(), 3);
-        assert_eq!(cell_path(&p.row_paths, &p.col_roles, 2, 0), Some(vec![Seg::Idx(2)]));
+        assert_eq!(
+            cell_path(&p.row_paths, &p.col_roles, 2, 0),
+            Some(vec![Seg::Idx(2)])
+        );
     }
 
     #[test]
@@ -513,7 +539,10 @@ mod tests {
         let names: Vec<String> = p.df.columns.iter().map(|c| c.name.clone()).collect();
         assert_eq!(names, vec![DEFAULT_COLNAME, "a"]);
         assert_eq!(p.df.get_physical(1, 0), "7");
-        assert_eq!(cell_path(&p.row_paths, &p.col_roles, 1, 0), Some(vec![Seg::Idx(1)]));
+        assert_eq!(
+            cell_path(&p.row_paths, &p.col_roles, 1, 0),
+            Some(vec![Seg::Idx(1)])
+        );
     }
 
     #[test]
@@ -544,12 +573,24 @@ mod tests {
         let p = view.project(&root).unwrap();
 
         let names: Vec<String> = p.df.columns.iter().map(|c| c.name.clone()).collect();
-        assert_eq!(names, vec!["id", "meta.ok", "meta.n"], "children sit where the parent was");
+        assert_eq!(
+            names,
+            vec!["id", "meta.ok", "meta.n"],
+            "children sit where the parent was"
+        );
         assert_eq!(p.df.get_physical(0, 2), "2");
-        assert_eq!(p.df.get_physical(1, 2), "", "row without the key is empty, not an error");
+        assert_eq!(
+            p.df.get_physical(1, 2),
+            "",
+            "row without the key is empty, not an error"
+        );
         assert_eq!(
             cell_path(&p.row_paths, &p.col_roles, 0, 1),
-            Some(vec![Seg::Idx(0), Seg::Key("meta".into()), Seg::Key("ok".into())]),
+            Some(vec![
+                Seg::Idx(0),
+                Seg::Key("meta".into()),
+                Seg::Key("ok".into())
+            ]),
             "an expanded cell still addresses its real node, so it stays editable"
         );
     }
@@ -562,7 +603,11 @@ mod tests {
         let p = view.project(&root).unwrap();
         let names: Vec<String> = p.df.columns.iter().map(|c| c.name.clone()).collect();
         assert_eq!(names, vec!["t[0]", "t[1]", "t[2]"]);
-        assert_eq!(p.df.get_physical(1, 1), "", "short row has no second element");
+        assert_eq!(
+            p.df.get_physical(1, 1),
+            "",
+            "short row has no second element"
+        );
     }
 
     #[test]
@@ -572,18 +617,31 @@ mod tests {
         view.expand(vec![Seg::Key("a".into())]);
         view.expand(vec![Seg::Key("a".into()), Seg::Key("b".into())]);
         let names = |v: &View| -> Vec<String> {
-            v.project(&root).unwrap().df.columns.iter().map(|c| c.name.clone()).collect()
+            v.project(&root)
+                .unwrap()
+                .df
+                .columns
+                .iter()
+                .map(|c| c.name.clone())
+                .collect()
         };
         assert_eq!(names(&view), vec!["a.b.c"]);
 
         // `)` on a.b.c folds a.b, leaving a expanded
-        assert!(view.contract_one(&[Seg::Key("a".into()), Seg::Key("b".into()), Seg::Key("c".into())]));
+        assert!(view.contract_one(&[
+            Seg::Key("a".into()),
+            Seg::Key("b".into()),
+            Seg::Key("c".into())
+        ]));
         assert_eq!(names(&view), vec!["a.b"]);
 
         assert!(view.contract_one(&[Seg::Key("a".into()), Seg::Key("b".into())]));
         assert_eq!(names(&view), vec!["a"]);
 
-        assert!(!view.contract_one(&[Seg::Key("a".into())]), "nothing left to fold");
+        assert!(
+            !view.contract_one(&[Seg::Key("a".into())]),
+            "nothing left to fold"
+        );
     }
 
     #[test]

@@ -21,7 +21,11 @@ pub fn render_choice_popup(
     let popup_area = centered_rect(60, 30, area);
     frame.render_widget(Clear, popup_area);
 
-    let width = items.iter().map(|(l, _)| l.chars().count()).max().unwrap_or(0);
+    let width = items
+        .iter()
+        .map(|(l, _)| l.chars().count())
+        .max()
+        .unwrap_or(0);
     let list_items: Vec<ListItem> = items
         .iter()
         .enumerate()
@@ -45,7 +49,10 @@ pub fn render_choice_popup(
 
     let list = List::new(list_items).block(
         Block::default()
-            .title(format!(" {} (↑↓ navigate, Enter apply, Esc cancel) ", title))
+            .title(format!(
+                " {} (↑↓ navigate, Enter apply, Esc cancel) ",
+                title
+            ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(T::PURPLE)),
     );

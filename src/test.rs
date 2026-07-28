@@ -358,7 +358,6 @@ mod tests {
         assert_eq!(n, 2);
     }
 
-
     // ── $EDITOR round trip for JSON/YAML/TOML nodes ───────────────────────────
     //
     // The suspend/resume half needs a real terminal, but the half that matters — parse
@@ -391,7 +390,10 @@ mod tests {
             .unwrap()
             .to_string_as(
                 Format::Json,
-                &SaveOpts { indent: false, sort_keys: false },
+                &SaveOpts {
+                    indent: false,
+                    sort_keys: false,
+                },
             )
             .unwrap();
         assert_eq!(out.trim(), r#"{"db":{"host":"h2","port":5432}}"#);
@@ -430,7 +432,10 @@ mod tests {
             .unwrap()
             .to_string_as(
                 Format::Json,
-                &SaveOpts { indent: false, sort_keys: false },
+                &SaveOpts {
+                    indent: false,
+                    sort_keys: false,
+                },
             )
             .unwrap();
         assert_eq!(out.trim(), r#"{"db":{"host":"h"}}"#, "document untouched");

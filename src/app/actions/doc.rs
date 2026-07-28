@@ -213,7 +213,9 @@ impl App {
             return;
         };
         let s = self.stack.active();
-        let Some(hits) = s.doc_hits.as_ref() else { return };
+        let Some(hits) = s.doc_hits.as_ref() else {
+            return;
+        };
         let Some(path) = hits.paths.get(row).cloned() else {
             return;
         };
@@ -465,7 +467,9 @@ fn deepest_existing(root: &crate::data::doc::Node, path: &[Seg]) -> String {
 /// Put the cursor on the row (or key) the hit named, so the match is under the cursor
 /// rather than merely somewhere on the sheet.
 fn place_cursor(sheet: &mut crate::sheet::Sheet, seg: Option<&Seg>) {
-    let Some(doc) = sheet.doc.as_ref() else { return };
+    let Some(doc) = sheet.doc.as_ref() else {
+        return;
+    };
     let Some(seg) = seg else { return };
     match seg {
         Seg::Idx(i) => {
@@ -496,7 +500,10 @@ fn hits_dataframe(
 ) -> color_eyre::Result<crate::data::dataframe::DataFrame> {
     use polars::prelude::*;
     let col = |f: fn(&(String, String, String, String)) -> &String, name: &str| {
-        Column::new(name.into(), rows.iter().map(f).cloned().collect::<Vec<String>>())
+        Column::new(
+            name.into(),
+            rows.iter().map(f).cloned().collect::<Vec<String>>(),
+        )
     };
     let df = polars::prelude::DataFrame::new(
         rows.len(),

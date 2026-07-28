@@ -489,11 +489,10 @@ impl Node {
             .get_mut(parents)
             .ok_or_else(|| eyre!("no node at {}", path_to_string(parents)))?;
         match (parent, last) {
-            (Node::Obj(m), Seg::Key(k)) => {
-                m.shift_remove(k)
-                    .map(|_| ())
-                    .ok_or_else(|| eyre!("no key `{}`", k))
-            }
+            (Node::Obj(m), Seg::Key(k)) => m
+                .shift_remove(k)
+                .map(|_| ())
+                .ok_or_else(|| eyre!("no key `{}`", k)),
             (Node::Arr(v), Seg::Idx(i)) => {
                 if *i >= v.len() {
                     return Err(eyre!("index {} out of range", i));
@@ -576,9 +575,7 @@ impl Node {
     pub fn parse_scalar(text: &str, old: Option<&Node>) -> Node {
         match old {
             Some(Node::Str(_)) => return Node::Str(text.to_string()),
-            Some(Node::DateTime(_)) if !text.is_empty() => {
-                return Node::DateTime(text.to_string())
-            }
+            Some(Node::DateTime(_)) if !text.is_empty() => return Node::DateTime(text.to_string()),
             _ => {}
         }
         let t = text.trim();
@@ -610,7 +607,6 @@ fn fmt_float(f: f64) -> String {
         f.to_string()
     }
 }
-
 
 // ── writing TOML back through its own source ─────────────────────────────────
 
@@ -773,7 +769,9 @@ fn node_to_item(node: &Node) -> toml_edit::Item {
         Node::Null => toml_edit::Item::None,
         // An array of tables is what `[[name]]` means; without this it would come out
         // as one long inline array, which is legal TOML but not what anyone writes.
-        Node::Arr(items) if !items.is_empty() && items.iter().all(|n| matches!(n, Node::Obj(_))) => {
+        Node::Arr(items)
+            if !items.is_empty() && items.iter().all(|n| matches!(n, Node::Obj(_))) =>
+        {
             let mut aot = toml_edit::ArrayOfTables::new();
             for n in items {
                 if let Node::Obj(map) = n {
@@ -845,8 +843,8 @@ fn parse_jsonl(text: &str) -> Result<Node> {
         if line.is_empty() || line.starts_with("//") || line.starts_with('#') {
             continue;
         }
-        let v: serde_json::Value = serde_json::from_str(line)
-            .map_err(|e| eyre!("line {}: {}", n + 1, e))?;
+        let v: serde_json::Value =
+            serde_json::from_str(line).map_err(|e| eyre!("line {}: {}", n + 1, e))?;
         rows.push(from_json(v));
     }
     Ok(Node::Arr(rows))
@@ -870,9 +868,7 @@ fn parse_yaml(text: &str) -> Result<(Node, bool)> {
 }
 
 fn parse_toml(text: &str) -> Result<Node> {
-    let doc: toml_edit::DocumentMut = text
-        .parse()
-        .map_err(|e| eyre!("{}", e))?;
+    let doc: toml_edit::DocumentMut = text.parse().map_err(|e| eyre!("{}", e))?;
     Ok(item_to_node(doc.as_item()))
 }
 
@@ -974,11 +970,7 @@ fn toml_value_to_node(v: &toml_edit::Value) -> Node {
 // ── serialising ──────────────────────────────────────────────────────────────
 
 pub fn serialize(root: &Node, format: Format, multi_doc: bool, opts: &SaveOpts) -> Result<String> {
-    let root = if opts.sort_keys {
-        &sorted(root)
-    } else {
-        root
-    };
+    let root = if opts.sort_keys { &sorted(root) } else { root };
     match format {
         Format::Json => {
             let v = to_json(root);
@@ -1039,7 +1031,11 @@ fn sorted(n: &Node) -> Node {
         Node::Obj(m) => {
             let mut keys: Vec<&String> = m.keys().collect();
             keys.sort();
-            Node::Obj(keys.into_iter().map(|k| (k.clone(), sorted(&m[k]))).collect())
+            Node::Obj(
+                keys.into_iter()
+                    .map(|k| (k.clone(), sorted(&m[k])))
+                    .collect(),
+            )
         }
         Node::Arr(v) => Node::Arr(v.iter().map(sorted).collect()),
         other => other.clone(),
@@ -1052,7 +1048,9 @@ fn to_json(n: &Node) -> serde_json::Value {
         Node::Null => J::Null,
         Node::Bool(b) => J::Bool(*b),
         Node::Int(i) => J::Number((*i).into()),
-        Node::Float(f) => serde_json::Number::from_f64(*f).map(J::Number).unwrap_or(J::Null),
+        Node::Float(f) => serde_json::Number::from_f64(*f)
+            .map(J::Number)
+            .unwrap_or(J::Null),
         // JSON has no date type, so a datetime degrades to its RFC-3339 text
         Node::Str(s) | Node::DateTime(s) => J::String(s.clone()),
         Node::Arr(v) => J::Array(v.iter().map(to_json).collect()),
@@ -1077,7 +1075,6 @@ fn to_yaml(n: &Node) -> serde_yaml_ng::Value {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1095,7 +1092,9 @@ mod tests {
     fn json_roundtrip_preserves_key_order() {
         let src = r#"{"zebra": 1, "apple": 2, "mango": [1, 2, 3]}"#;
         let doc = Doc::from_str(src, Format::Json).unwrap();
-        let out = doc.to_string_as(Format::Json, &SaveOpts::default()).unwrap();
+        let out = doc
+            .to_string_as(Format::Json, &SaveOpts::default())
+            .unwrap();
         let keys: Vec<&str> = out
             .lines()
             .filter_map(|l| l.trim().split('"').nth(1))
@@ -1112,14 +1111,18 @@ mod tests {
             doc.root.get(&[Seg::Key("released".into())]),
             Some(Node::DateTime(_))
         ));
-        let out = doc.to_string_as(Format::Toml, &SaveOpts::default()).unwrap();
+        let out = doc
+            .to_string_as(Format::Toml, &SaveOpts::default())
+            .unwrap();
         assert!(
             out.contains("1979-05-27T07:32:00Z"),
             "datetime must not become a quoted string: {}",
             out
         );
         // and converting to JSON degrades it to text rather than corrupting it
-        let js = doc.to_string_as(Format::Json, &SaveOpts::default()).unwrap();
+        let js = doc
+            .to_string_as(Format::Json, &SaveOpts::default())
+            .unwrap();
         assert!(js.contains("\"1979-05-27T07:32:00Z\""), "{}", js);
     }
 
@@ -1128,11 +1131,16 @@ mod tests {
         let src = "a: 1\n---\na: 2\n";
         let doc = Doc::from_str(src, Format::Yaml).unwrap();
         assert!(doc.multi_doc);
-        assert_eq!(doc.root, Node::Arr(vec![
-            obj(&[("a", Node::Int(1))]),
-            obj(&[("a", Node::Int(2))]),
-        ]));
-        let out = doc.to_string_as(Format::Yaml, &SaveOpts::default()).unwrap();
+        assert_eq!(
+            doc.root,
+            Node::Arr(vec![
+                obj(&[("a", Node::Int(1))]),
+                obj(&[("a", Node::Int(2))]),
+            ])
+        );
+        let out = doc
+            .to_string_as(Format::Yaml, &SaveOpts::default())
+            .unwrap();
         assert_eq!(out.matches("---").count(), 2, "{}", out);
         assert_eq!(Doc::from_str(&out, Format::Yaml).unwrap().root, doc.root);
     }
@@ -1143,9 +1151,14 @@ mod tests {
         let doc = Doc::from_str(src, Format::Jsonl).unwrap();
         assert_eq!(
             doc.root,
-            Node::Arr(vec![obj(&[("a", Node::Int(1))]), obj(&[("a", Node::Int(2))])])
+            Node::Arr(vec![
+                obj(&[("a", Node::Int(1))]),
+                obj(&[("a", Node::Int(2))])
+            ])
         );
-        let out = doc.to_string_as(Format::Jsonl, &SaveOpts::default()).unwrap();
+        let out = doc
+            .to_string_as(Format::Jsonl, &SaveOpts::default())
+            .unwrap();
         assert_eq!(out, "{\"a\":1}\n{\"a\":2}\n");
     }
 
@@ -1160,7 +1173,9 @@ mod tests {
             multi_doc: false,
             revision: 0,
         };
-        let out = doc.to_string_as(Format::Toml, &SaveOpts::default()).unwrap();
+        let out = doc
+            .to_string_as(Format::Toml, &SaveOpts::default())
+            .unwrap();
         assert!(out.contains("keep"), "{}", out);
         assert!(!out.contains("drop"), "null key must be dropped: {}", out);
 
@@ -1172,7 +1187,9 @@ mod tests {
             multi_doc: false,
             revision: 0,
         };
-        assert!(arr.to_string_as(Format::Toml, &SaveOpts::default()).is_err());
+        assert!(arr
+            .to_string_as(Format::Toml, &SaveOpts::default())
+            .is_err());
     }
 
     #[test]
@@ -1181,7 +1198,11 @@ mod tests {
             "servers",
             Node::Arr(vec![obj(&[("host", Node::Str("a".into()))])]),
         )]);
-        let p = vec![Seg::Key("servers".into()), Seg::Idx(0), Seg::Key("host".into())];
+        let p = vec![
+            Seg::Key("servers".into()),
+            Seg::Idx(0),
+            Seg::Key("host".into()),
+        ];
         assert_eq!(root.get(&p), Some(&Node::Str("a".into())));
         root.set(&p, Node::Str("b".into())).unwrap();
         assert_eq!(root.get(&p), Some(&Node::Str("b".into())));
@@ -1195,7 +1216,10 @@ mod tests {
     #[test]
     fn parse_scalar_keeps_string_typed_cells_as_strings() {
         let old = Node::Str("1.0".into());
-        assert_eq!(Node::parse_scalar("2.0", Some(&old)), Node::Str("2.0".into()));
+        assert_eq!(
+            Node::parse_scalar("2.0", Some(&old)),
+            Node::Str("2.0".into())
+        );
         assert_eq!(Node::parse_scalar("2.0", None), Node::Float(2.0));
         assert_eq!(Node::parse_scalar("7", None), Node::Int(7));
         assert_eq!(Node::parse_scalar("", None), Node::Null);
@@ -1204,10 +1228,14 @@ mod tests {
 
     #[test]
     fn render_compact_matches_visidata_shape_and_clips() {
-        let n = obj(&[("host", Node::Str("localhost".into())), ("port", Node::Int(5432))]);
+        let n = obj(&[
+            ("host", Node::Str("localhost".into())),
+            ("port", Node::Int(5432)),
+        ]);
         assert_eq!(n.render_compact(100), "{2} host=localhost port=5432");
         assert_eq!(
-            Node::Arr(vec![Node::Str("alpha".into()), Node::Str("beta".into())]).render_compact(100),
+            Node::Arr(vec![Node::Str("alpha".into()), Node::Str("beta".into())])
+                .render_compact(100),
             "[2] alpha; beta"
         );
         let clipped = n.render_compact(10);
@@ -1228,7 +1256,11 @@ mod tests {
 
     #[test]
     fn sniffing_refuses_plain_text_and_delimited_data() {
-        assert_eq!(sniff("just some prose\n", false), None, "a scalar is not YAML");
+        assert_eq!(
+            sniff("just some prose\n", false),
+            None,
+            "a scalar is not YAML"
+        );
         assert_eq!(sniff("", false), None);
         // a CSV must never be mistaken for a document, extension or not
         assert_eq!(sniff("a,b,c\n1,2,3\n", false), None);
@@ -1267,10 +1299,16 @@ pool = 10
             )
             .unwrap();
 
-        let out = doc.to_string_as(Format::Toml, &SaveOpts::default()).unwrap();
+        let out = doc
+            .to_string_as(Format::Toml, &SaveOpts::default())
+            .unwrap();
         assert!(out.contains("# top of file"), "{}", out);
         assert!(out.contains("# the database section"), "{}", out);
-        assert!(out.contains("# what it is called"), "trailing comment: {}", out);
+        assert!(
+            out.contains("# what it is called"),
+            "trailing comment: {}",
+            out
+        );
         assert!(out.contains("port = 9090"), "{}", out);
         assert!(out.contains("host = \"db.internal\""), "{}", out);
         assert!(out.contains("pool = 10"), "untouched keys stay: {}", out);
@@ -1280,11 +1318,15 @@ pool = 10
     fn removing_and_adding_keys_is_reflected_without_losing_the_rest() {
         let src = "# keep me\na = 1\nb = 2\n";
         let mut doc = Doc::from_str(src, Format::Toml).unwrap();
-        let Node::Obj(map) = &mut doc.root else { unreachable!() };
+        let Node::Obj(map) = &mut doc.root else {
+            unreachable!()
+        };
         map.shift_remove("b");
         map.insert("c".into(), Node::Str("new".into()));
 
-        let out = doc.to_string_as(Format::Toml, &SaveOpts::default()).unwrap();
+        let out = doc
+            .to_string_as(Format::Toml, &SaveOpts::default())
+            .unwrap();
         assert!(out.contains("# keep me"), "{}", out);
         assert!(out.contains("a = 1"), "{}", out);
         assert!(!out.contains("b = 2"), "removed key is gone: {}", out);
@@ -1304,11 +1346,17 @@ host = \"b\"
         let mut doc = Doc::from_str(src, Format::Toml).unwrap();
         doc.root
             .set(
-                &[Seg::Key("server".into()), Seg::Idx(1), Seg::Key("host".into())],
+                &[
+                    Seg::Key("server".into()),
+                    Seg::Idx(1),
+                    Seg::Key("host".into()),
+                ],
                 Node::Str("bb".into()),
             )
             .unwrap();
-        let out = doc.to_string_as(Format::Toml, &SaveOpts::default()).unwrap();
+        let out = doc
+            .to_string_as(Format::Toml, &SaveOpts::default())
+            .unwrap();
         assert!(out.contains("# servers follow"), "{}", out);
         assert!(out.contains("# the first one"), "{}", out);
         assert!(out.contains("host = \"bb\""), "{}", out);
@@ -1336,7 +1384,9 @@ host = \"b\"
     #[test]
     fn converting_to_another_format_does_not_go_through_the_toml_source() {
         let doc = Doc::from_str("# c\na = 1\n", Format::Toml).unwrap();
-        let out = doc.to_string_as(Format::Json, &SaveOpts::default()).unwrap();
+        let out = doc
+            .to_string_as(Format::Json, &SaveOpts::default())
+            .unwrap();
         assert!(!out.contains("# c"), "JSON has no comments: {}", out);
         assert!(out.contains("\"a\""), "{}", out);
     }
@@ -1345,12 +1395,16 @@ host = \"b\"
     fn a_renamed_key_stays_on_its_own_line_and_the_rest_keeps_its_comments() {
         let src = "# header\na = 1\nb = 2  # about b\nc = 3\n";
         let mut doc = Doc::from_str(src, Format::Toml).unwrap();
-        let Node::Obj(map) = &mut doc.root else { unreachable!() };
+        let Node::Obj(map) = &mut doc.root else {
+            unreachable!()
+        };
         let idx = map.get_index_of("b").unwrap();
         let (_, v) = map.shift_remove_index(idx).unwrap();
         map.shift_insert(idx, "bb".into(), v);
 
-        let out = doc.to_string_as(Format::Toml, &SaveOpts::default()).unwrap();
+        let out = doc
+            .to_string_as(Format::Toml, &SaveOpts::default())
+            .unwrap();
         let keys: Vec<&str> = out
             .lines()
             .filter(|l| l.contains('='))
@@ -1403,7 +1457,11 @@ host = \"b\"
     #[test]
     fn paths_round_trip_through_text_including_awkward_keys() {
         for path in [
-            vec![Seg::Key("servers".into()), Seg::Idx(1), Seg::Key("host".into())],
+            vec![
+                Seg::Key("servers".into()),
+                Seg::Idx(1),
+                Seg::Key("host".into()),
+            ],
             vec![Seg::Key("a.b".into()), Seg::Key("c".into())],
             vec![Seg::Key("has[bracket]".into())],
             vec![Seg::Idx(0), Seg::Idx(2)],
@@ -1413,7 +1471,11 @@ host = \"b\"
             assert_eq!(parse_path(&text).unwrap(), path, "round trip of `{}`", text);
         }
         assert_eq!(
-            path_to_string(&[Seg::Key("servers".into()), Seg::Idx(1), Seg::Key("host".into())]),
+            path_to_string(&[
+                Seg::Key("servers".into()),
+                Seg::Idx(1),
+                Seg::Key("host".into())
+            ]),
             "servers[1].host"
         );
         assert_eq!(path_to_string(&[Seg::Key("a.b".into())]), "[\"a.b\"]");
@@ -1422,7 +1484,10 @@ host = \"b\"
     #[test]
     fn a_malformed_path_is_rejected_rather_than_guessed() {
         assert!(parse_path("servers[1").is_err(), "unclosed bracket");
-        assert!(parse_path("servers[x]").is_err(), "not an index, not quoted");
+        assert!(
+            parse_path("servers[x]").is_err(),
+            "not an index, not quoted"
+        );
         assert!(parse_path("a..b").is_err(), "empty segment");
     }
 
@@ -1445,12 +1510,18 @@ host = \"b\"
         // multi-document YAML keeps its separators only in YAML
         let multi = Doc::from_str("a: 1\n---\na: 2\n", Format::Yaml).unwrap();
         assert!(conversion_caveats(&multi, Format::Yaml).is_empty());
-        assert_eq!(conversion_caveats(&multi, Format::Json), vec!["document separators"]);
+        assert_eq!(
+            conversion_caveats(&multi, Format::Json),
+            vec!["document separators"]
+        );
 
         // a commented TOML keeps its comments only in TOML
         let commented = Doc::from_str("# note\na = 1\n", Format::Toml).unwrap();
         assert!(conversion_caveats(&commented, Format::Toml).is_empty());
-        assert_eq!(conversion_caveats(&commented, Format::Yaml), vec!["comments"]);
+        assert_eq!(
+            conversion_caveats(&commented, Format::Yaml),
+            vec!["comments"]
+        );
         // one without comments has nothing to lose
         let bare = Doc::from_str("a = 1\n", Format::Toml).unwrap();
         assert!(conversion_caveats(&bare, Format::Yaml).is_empty());
