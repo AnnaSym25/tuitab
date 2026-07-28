@@ -81,6 +81,9 @@ pub struct Sheet {
     pub path_input: TextInput,
     /// jq program typed for `gq`
     pub query_input: TextInput,
+    /// File name to prefill when saving, for sheets whose title is not a path — a query
+    /// result is titled with its program, which is no use as a destination.
+    pub save_name_hint: Option<String>,
 
     // ── Expression state (=) ──────────────────────────────────────────────────
     pub expr_input: TextInput,
@@ -154,6 +157,7 @@ impl Sheet {
             select_regex_input: TextInput::new(),
             path_input: TextInput::new(),
             query_input: TextInput::new(),
+            save_name_hint: None,
             expr_input: TextInput::new(),
             edit_input: TextInput::new(),
             edit_row: 0,

@@ -6,6 +6,7 @@ impl App {
         match action {
             Action::SaveFile => {
                 self.save.error = None;
+                let hint = self.stack.active().save_name_hint.clone();
                 let default_path = self
                     .stack
                     .active()
@@ -21,6 +22,7 @@ impl App {
                             })
                             .or_else(|| Some(p.to_string_lossy().into_owned()))
                     })
+                    .or(hint)
                     .unwrap_or_else(|| self.stack.active().title.clone());
 
                 self.save.autocomplete_candidates.clear();

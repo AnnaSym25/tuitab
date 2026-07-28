@@ -1420,3 +1420,37 @@ fn a_failing_query_reports_and_pushes_nothing() {
         );
     }
 }
+
+/// A query result must offer a sensible file name to save to. Its title carries the
+/// program text, which is not a path.
+#[test]
+fn a_query_result_offers_a_usable_save_name() {
+    use tuitab::types::Action;
+
+    let path = out("savename.json");
+    std::fs::write(&path, r#"[{"n":1,"ok":true},{"n":2,"ok":false}]"#).unwrap();
+    let mut app = tuitab::app::App::new(&path, None).unwrap();
+
+    app.handle_action(Action::StartQuery);
+    for c in ".[] | select(.ok)".chars() {
+        app.handle_action(Action::QueryInputChar(c));
+    }
+    app.handle_action(Action::ApplyQuery);
+
+    app.handle_action(Action::SaveFile);
+    let prefill = app.save.input.as_str().to_string();
+    assert!(
+        !prefill.contains('›') && !prefill.contains('|'),
+        "the prefill must be a path, not a query: {}",
+        prefill
+    );
+    assert!(prefill.ends_with(".json"), "{}", prefill);
+
+    // and it actually saves there
+    app.handle_action(Action::ApplySave);
+    assert!(
+        app.status_message.contains("Saved"),
+        "{}",
+        app.status_message
+    );
+}

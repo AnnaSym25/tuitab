@@ -386,6 +386,10 @@ impl App {
                 let title = format!("{} › {}", root_name(&self.stack.active().title), program);
                 let mut sheet = crate::sheet::Sheet::new(title, df);
                 sheet.doc = Some(state);
+                sheet.save_name_hint = Some(query_save_name(
+                    self.stack.active().source_path.as_deref(),
+                    format,
+                ));
                 self.stack.push(sheet);
                 self.status_message = format!("{} rows", rows);
             }
@@ -509,6 +513,16 @@ fn mode_name(m: crate::data::view::ViewMode) -> &'static str {
         V::KeyValue => "key/value",
         V::Scalars => "scalars",
     }
+}
+
+/// A destination for a query result: the source's stem with `-query` appended, in the
+/// source's format.  The sheet's title is its jq program, which is not a path.
+fn query_save_name(source: Option<&std::path::Path>, format: crate::data::doc::Format) -> String {
+    let stem = source
+        .and_then(|p| p.file_stem())
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "query".to_string());
+    format!("{}-query.{}", stem, format.name())
 }
 
 /// Strip any breadcrumb trail already on a sheet title so diving twice does not produce
