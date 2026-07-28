@@ -54,6 +54,58 @@ impl Format {
     }
 }
 
+/// Something a target format cannot carry across a conversion.
+///
+/// Formats differ in what they can express, and a conversion that quietly drops
+/// something is worse than one that says so.  Rather than growing a branch in the save
+/// path per format, each quirk is one entry in [`CAVEATS`]: a description and a
+/// predicate saying when it applies.  A format with nothing to declare simply has no
+/// entry — most do not.
+pub struct Caveat {
+    /// Completes the sentence "<FORMAT> cannot carry ...".
+    pub lost: &'static str,
+    /// Whether this applies to `doc` being written as `target`.
+    pub applies: fn(doc: &Doc, target: Format) -> bool,
+}
+
+/// Every known one-way conversion.  Add an entry when a new format has a quirk;
+/// nothing else needs to change.
+pub const CAVEATS: &[Caveat] = &[
+    Caveat {
+        // YAML is the only format with a document separator; everywhere else several
+        // documents can only become several array elements.
+        lost: "document separators",
+        applies: |doc, target| doc.multi_doc && target != Format::Yaml,
+    },
+    Caveat {
+        // JSONL is a record stream by definition: there is no way to write "this is one
+        // document", so a non-array document returns as a stream of one record.
+        lost: "the difference between a document and a one-record stream",
+        applies: |doc, target| target == Format::Jsonl && !matches!(doc.root, Node::Arr(_)),
+    },
+    Caveat {
+        // Only a TOML file written back as TOML goes through its own source text.
+        lost: "comments",
+        applies: |doc, target| {
+            doc.format == Format::Toml
+                && target != Format::Toml
+                && doc
+                    .source_text
+                    .as_deref()
+                    .is_some_and(|s| s.lines().any(|l| l.trim_start().starts_with('#')))
+        },
+    },
+];
+
+/// What `doc` would lose if written as `target`.
+pub fn conversion_caveats(doc: &Doc, target: Format) -> Vec<&'static str> {
+    CAVEATS
+        .iter()
+        .filter(|c| (c.applies)(doc, target))
+        .map(|c| c.lost)
+        .collect()
+}
+
 /// Guess a structured format from the contents of `text`.
 ///
 /// `bracket_only` restricts the guess to JSON and JSONL, which announce themselves
@@ -1372,5 +1424,46 @@ host = \"b\"
         assert!(parse_path("servers[1").is_err(), "unclosed bracket");
         assert!(parse_path("servers[x]").is_err(), "not an index, not quoted");
         assert!(parse_path("a..b").is_err(), "empty segment");
+    }
+
+    #[test]
+    fn conversion_caveats_fire_only_where_they_apply() {
+        // a plain JSON document has nothing to declare about JSON or YAML
+        let plain = Doc::from_str(r#"[{"a":1}]"#, Format::Json).unwrap();
+        assert!(conversion_caveats(&plain, Format::Json).is_empty());
+        assert!(conversion_caveats(&plain, Format::Yaml).is_empty());
+        // it is already a list, so JSONL costs it nothing
+        assert!(conversion_caveats(&plain, Format::Jsonl).is_empty());
+
+        // an object written as JSONL comes back a stream
+        let obj = Doc::from_str(r#"{"a":1}"#, Format::Json).unwrap();
+        assert_eq!(
+            conversion_caveats(&obj, Format::Jsonl),
+            vec!["the difference between a document and a one-record stream"]
+        );
+
+        // multi-document YAML keeps its separators only in YAML
+        let multi = Doc::from_str("a: 1\n---\na: 2\n", Format::Yaml).unwrap();
+        assert!(conversion_caveats(&multi, Format::Yaml).is_empty());
+        assert_eq!(conversion_caveats(&multi, Format::Json), vec!["document separators"]);
+
+        // a commented TOML keeps its comments only in TOML
+        let commented = Doc::from_str("# note\na = 1\n", Format::Toml).unwrap();
+        assert!(conversion_caveats(&commented, Format::Toml).is_empty());
+        assert_eq!(conversion_caveats(&commented, Format::Yaml), vec!["comments"]);
+        // one without comments has nothing to lose
+        let bare = Doc::from_str("a = 1\n", Format::Toml).unwrap();
+        assert!(conversion_caveats(&bare, Format::Yaml).is_empty());
+    }
+
+    #[test]
+    fn several_caveats_are_reported_together() {
+        // a multi-document YAML written as JSONL loses its separators *and* becomes a
+        // stream — the mechanism has to report both, not the first one it finds
+        let multi = Doc::from_str("a: 1\n---\na: 2\n", Format::Yaml).unwrap();
+        let mut d = multi;
+        d.root = Node::Obj(Default::default()); // not an array any more
+        let lost = conversion_caveats(&d, Format::Jsonl);
+        assert_eq!(lost.len(), 2, "{:?}", lost);
     }
 }
