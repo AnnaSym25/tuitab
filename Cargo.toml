@@ -1,9 +1,9 @@
 [package]
 name = "tuitab"
-version = "0.4.3"
+version = "0.5.0"
 edition = "2021"
 authors = ["denisotree"]
-description = "Terminal tabular data explorer — CSV/JSON/Parquet/Excel/SQLite viewer with filtering, sorting, pivot tables, and charts"
+description = "Terminal tabular data explorer — CSV/JSON/YAML/TOML/Parquet/Excel/SQLite viewer with filtering, sorting, pivot tables, and charts"
 license = "Apache-2.0"
 repository = "https://github.com/denisotree/tuitab"
 homepage = "https://github.com/denisotree/tuitab"

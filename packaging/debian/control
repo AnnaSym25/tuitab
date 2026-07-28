@@ -14,7 +14,10 @@ Architecture: any
 Depends: ${misc:Depends}, ${shlibs:Depends}
 Description: Terminal tabular data explorer
  tuitab is a fast, keyboard-driven terminal viewer for tabular data.
- It supports CSV, TSV, JSON, Parquet, Excel (xlsx/xls), and SQLite files.
+ It supports CSV, TSV, JSON, JSONL, YAML, TOML, Parquet, Excel (xlsx/xls),
+ and SQLite files.  JSON, YAML and TOML open as a table over the parsed
+ document, so nested structures can be browsed, edited and converted between
+ formats without losing their shape.
  .
  Features include filtering, sorting, pivot tables, computed columns,
  column statistics, histograms and line/bar charts, transposing, and export.
