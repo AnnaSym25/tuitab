@@ -1585,9 +1585,8 @@ fn a_query_result_offers_a_usable_save_name() {
     // The prefill is a bare file name, which would land in the working directory — the
     // repository, when the suite runs from it. Point it somewhere disposable before
     // saving, having already asserted the part that matters.
-    app.save.input = tuitab::ui::text_input::TextInput::with_value(
-        out(&prefill).to_string_lossy().into_owned(),
-    );
+    app.save.input =
+        tuitab::ui::text_input::TextInput::with_value(out(&prefill).to_string_lossy().into_owned());
     app.handle_action(Action::ApplySave);
     assert!(
         app.status_message.contains("Saved"),
