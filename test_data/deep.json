@@ -1,0 +1,73 @@
+{
+  "meta": {
+    "empty_list": [],
+    "empty_obj": {},
+    "note": "первая строка\nвторая строка\nтретья",
+    "ratio": 0.6
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Requests",
+      "config": {
+        "defaults": {
+          "custom": {
+            "axis": {
+              "placement": "auto",
+              "hide": {
+                "legend": false,
+                "tooltip": false
+              }
+            }
+          }
+        },
+        "overrides": [
+          {
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "dark-red",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.drawStyle",
+                "value": "line"
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0.5
+              }
+            ]
+          }
+        ]
+      },
+      "sql": "SELECT a\nFROM t\nWHERE b > 0"
+    },
+    {
+      "id": 2,
+      "title": "Success",
+      "description": "только у второй панели",
+      "config": {
+        "defaults": {
+          "custom": {
+            "axis": {
+              "placement": "right",
+              "hide": {
+                "legend": true,
+                "tooltip": false
+              }
+            }
+          }
+        },
+        "overrides": []
+      },
+      "sql": "SELECT c\nFROM t"
+    }
+  ]
+}

@@ -314,6 +314,12 @@ impl DocState {
         if guard.multi_doc && target != Format::Yaml {
             lost.push("document separators");
         }
+        // JSONL has no way to say "this is one document rather than a stream", so a
+        // document that is not already a list reads back as a one-record stream.  The
+        // data survives exactly; the shape does not.
+        if target == Format::Jsonl && !matches!(guard.root, Node::Arr(_)) {
+            lost.push("the difference between a document and a one-record stream");
+        }
         if guard.format == Format::Toml
             && target != Format::Toml
             && guard

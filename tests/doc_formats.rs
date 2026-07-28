@@ -1472,3 +1472,154 @@ fn a_query_result_offers_a_usable_save_name() {
         app.status_message
     );
 }
+
+/// A deeply nested document with the shapes a real config has: nine levels, multi-line
+/// string values, empty containers, sparse records, and a column whose values are an
+/// object, a string and two numbers.  Built after auditing a real Grafana dashboard.
+#[test]
+fn a_deeply_nested_document_survives_every_conversion() {
+    use tuitab::data::doc::{Doc, Format as F, SaveOpts};
+
+    let original = std::fs::read_to_string(fixture("deep.json")).unwrap();
+    let doc = Doc::from_str(&original, F::Json).unwrap();
+
+    // JSON is written back byte for byte
+    assert_eq!(
+        doc.to_string_as(F::Json, &SaveOpts::default()).unwrap(),
+        original
+    );
+
+    // YAML and TOML carry the whole tree there and back
+    for fmt in [F::Yaml, F::Toml] {
+        let text = doc.to_string_as(fmt, &SaveOpts::default()).unwrap();
+        let back = Doc::from_str(&text, fmt).unwrap();
+        assert_eq!(back.root, doc.root, "{:?} round trip", fmt);
+    }
+}
+
+/// JSONL cannot express "this is one document", so a document written as JSONL reads
+/// back as a stream of one record. The data is intact; the shape is not, and saving
+/// says so.
+#[test]
+fn jsonl_turns_a_document_into_a_one_record_stream_and_warns() {
+    use tuitab::data::doc::{Doc, Format as F, Node, SaveOpts};
+
+    let doc = Doc::from_str(r#"{"a":1,"b":[2,3]}"#, F::Json).unwrap();
+    let text = doc.to_string_as(F::Jsonl, &SaveOpts::default()).unwrap();
+    let back = Doc::from_str(&text, F::Jsonl).unwrap();
+
+    assert_eq!(text.lines().count(), 1);
+    let Node::Arr(items) = &back.root else {
+        panic!("jsonl always reads as a stream, got {:?}", back.root)
+    };
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0], doc.root, "the data itself is intact");
+
+    let (_, state) = tuitab::data::io::doc_io::DocState::from_doc(doc).unwrap();
+    let note = state.conversion_loss(F::Jsonl).expect("must warn");
+    assert!(note.contains("one-record stream"), "{}", note);
+
+    // a document that is already a list converts cleanly and says nothing
+    let list = Doc::from_str(r#"[{"a":1},{"a":2}]"#, F::Json).unwrap();
+    let (_, state) = tuitab::data::io::doc_io::DocState::from_doc(list).unwrap();
+    assert_eq!(state.conversion_loss(F::Jsonl), None);
+}
+
+/// A multi-line string reaches the table as one cell containing newlines — the table
+/// view shows its first line — and editing it does not flatten it.
+#[test]
+fn multi_line_values_survive_the_table_and_the_editor() {
+    use tuitab::types::Action;
+
+    let mut app = tuitab::app::App::new(&fixture("deep.json"), None).unwrap();
+    let row = (0..app.stack.active().dataframe.visible_row_count())
+        .find(|r| app.stack.active().dataframe.get_physical(*r, 0) == "panels")
+        .unwrap();
+    app.stack.active_mut().table_state.select(Some(row));
+    app.handle_action(Action::OpenRow);
+
+    let sql = app
+        .stack
+        .active()
+        .dataframe
+        .columns
+        .iter()
+        .position(|c| c.name == "sql")
+        .unwrap();
+    let before = app.stack.active().dataframe.get_physical(0, sql);
+    assert!(before.contains('\n'), "the cell holds the real value: {:?}", before);
+
+    // confirm an edit without changing anything: the newlines must still be there
+    {
+        let s = app.stack.active_mut();
+        s.edit_row = 0;
+        s.edit_col = sql;
+        s.edit_input = tuitab::ui::text_input::TextInput::with_value(before.clone());
+    }
+    app.handle_action(Action::ApplyEdit);
+    let after = app
+        .stack
+        .active()
+        .doc
+        .as_ref()
+        .unwrap()
+        .doc
+        .read()
+        .unwrap()
+        .root
+        .get(&tuitab::data::doc::parse_path("panels[0].sql").unwrap())
+        .cloned();
+    assert_eq!(
+        after,
+        Some(tuitab::data::doc::Node::Str(before)),
+        "a single-line editor must not flatten a multi-line value"
+    );
+}
+
+/// Expanding twice through a nine-level document names the columns by their full path
+/// and keeps every cell addressing its real node.
+#[test]
+fn expanding_deep_nesting_keeps_cells_addressable() {
+    use tuitab::data::doc::{parse_path, Node};
+    use tuitab::types::Action;
+
+    let mut app = tuitab::app::App::new(&fixture("deep.json"), None).unwrap();
+    let row = (0..app.stack.active().dataframe.visible_row_count())
+        .find(|r| app.stack.active().dataframe.get_physical(*r, 0) == "panels")
+        .unwrap();
+    app.stack.active_mut().table_state.select(Some(row));
+    app.handle_action(Action::OpenRow);
+
+    for _ in 0..2 {
+        let col = app
+            .stack
+            .active()
+            .dataframe
+            .columns
+            .iter()
+            .position(|c| c.name.starts_with("config"))
+            .unwrap();
+        app.stack.active_mut().cursor_col = col;
+        app.handle_action(Action::ExpandColumn);
+    }
+
+    let s = app.stack.active();
+    let names: Vec<String> = s.dataframe.columns.iter().map(|c| c.name.clone()).collect();
+    assert!(
+        names.iter().any(|n| n == "config.defaults.custom"),
+        "{:?}",
+        names
+    );
+    let col = names.iter().position(|n| n == "config.defaults.custom").unwrap();
+    assert_eq!(
+        s.doc.as_ref().unwrap().path_of(0, col),
+        Some(parse_path("panels[0].config.defaults.custom").unwrap())
+    );
+    // sparse records: only the second panel has a description
+    let d = names.iter().position(|n| n == "description").unwrap();
+    assert_eq!(s.dataframe.get_physical(0, d), "");
+    assert!(matches!(
+        s.doc.as_ref().unwrap().node_at(1, d),
+        Some(Node::Str(_))
+    ));
+}
