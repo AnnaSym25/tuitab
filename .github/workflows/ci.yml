@@ -69,8 +69,8 @@ jobs:
           # through object_store inside polars, which parses S3 and Azure listing
           # responses. tuitab opens local files only, so the code is unreachable; the
           # copy that matters — calamine's, for .xlsx — is on a fixed version. polars
-          # 0.54 drops the old quick-xml but breaks its API in a dozen places, so that
-          # upgrade is its own task. Re-check when polars is next upgraded.
+          # 0.54 does NOT help — it still pulls object_store 0.13 with the same
+          # quick-xml. Re-check when object_store itself moves past it.
           cargo audit \
             --ignore RUSTSEC-2025-0141 \
             --ignore RUSTSEC-2026-0194 \
