@@ -6,6 +6,7 @@ pub mod clipboard;
 pub mod data;
 pub mod event;
 pub mod keymap;
+pub mod mcp;
 pub mod sheet;
 #[cfg(test)]
 mod test;
@@ -33,11 +34,28 @@ pub struct Cli {
     /// stdin; for a file it overrides the extension, so `-t yaml deploy.conf` works.
     #[arg(short = 't', long = "type")]
     pub data_type: Option<String>,
+
+    /// Run as an MCP server on stdio, so a language model can query data files
+    /// through tuitab's engine instead of computing over them itself.
+    #[arg(long)]
+    pub mcp: bool,
 }
 
 pub fn run() -> Result<()> {
     color_eyre::install()?;
     let cli = Cli::parse();
+
+    // Before anything else: the MCP transport owns stdin and stdout, so neither
+    // the terminal detection below nor the /dev/tty juggling after it may run.
+    if cli.mcp {
+        // Tools name their own files, so a path here does nothing.  Say so on
+        // stderr — which the transport allows for logging — rather than let it
+        // vanish.
+        if !cli.files.is_empty() {
+            eprintln!("tuitab: --mcp ignores file arguments; the model names the files it wants.");
+        }
+        return mcp::serve();
+    }
 
     use std::io::IsTerminal;
 

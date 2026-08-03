@@ -8,6 +8,7 @@
 //! | [`loader`] | Low-level CSV/TSV reader with auto-delimiter detection |
 //! | [`async_loader`] | Background thread loader for files larger than 10 MB |
 //! | [`dataframe`] | [`dataframe::DataFrame`] — Polars-backed in-memory store with view state |
+//! | [`describe`] | Per-column statistical profile, shared by the `I` key and the MCP server |
 //! | [`doc`] | [`doc::Doc`] — document tree shared by JSON/JSONL/YAML/TOML, source of truth for those formats |
 //! | [`mod@column`] | [`column::ColumnMeta`] — per-column metadata (type, width, aggregators) |
 //! | [`expression`] | Expression AST and recursive-descent parser for computed columns and row filters |
@@ -21,6 +22,7 @@ pub mod aggregator;
 pub mod async_loader;
 pub mod column;
 pub mod dataframe;
+pub mod describe;
 pub mod doc;
 pub mod expression;
 pub mod io;

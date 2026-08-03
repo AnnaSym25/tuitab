@@ -52,6 +52,8 @@ cat data.csv | tuitab -t csv      # read from a pipe
   Excel, or SQLite. Converting between structured formats is just a different
   extension: open `config.toml`, save as `config.yaml`. Yank rows to the clipboard as
   TSV, CSV, JSON, or Markdown.
+- **MCP server** — `tuitab --mcp` exposes the same engine to an AI assistant, so it
+  computes over your data instead of guessing at it.
 
 ---
 
@@ -182,6 +184,7 @@ Arguments:
 Options:
   -d, --delimiter <CHAR>   Column delimiter (auto-detected if omitted)
   -t, --type <FORMAT>      Format when reading from stdin: csv, tsv, txt, json
+      --mcp                Run as an MCP server on stdio (see below)
   -h, --help               Print help
   -V, --version            Print version
 ```
@@ -204,6 +207,30 @@ sqlite3 app.db ".mode csv" ".headers on" "SELECT * FROM users" | tuitab -t csv
 
 > Stdin accepts `csv`, `tsv`, `txt`, `json`, `jsonl`, `yaml`, and `toml`. For
 > Parquet/Excel/SQLite, open the file directly.
+
+### MCP server — let an AI assistant use the engine
+
+`tuitab --mcp` speaks the [Model Context Protocol](https://modelcontextprotocol.io)
+over stdio. An assistant handed a data file can then compute over it with
+tuitab instead of doing the arithmetic in its head:
+
+```sh
+claude mcp add tuitab -- tuitab --mcp
+```
+
+Four tools: `tuitab_inspect` (columns, types, row count, sample rows),
+`tuitab_query` (filter, sort, computed columns, group by, frequency, pivot,
+join — composed as a pipeline, with results returned as JSON or written to
+xlsx/csv/parquet), `tuitab_describe` (per-column statistics), and `tuitab_jq`
+(jq programs over nested JSON/YAML/TOML).
+
+There is no SQL and no arbitrary code: the model sends structured operations,
+each mapping onto a tuitab function, and gets back numbers Polars computed. The
+server documents itself — the tool list and usage notes are sent to the model on
+connect.
+
+Costs no extra dependencies: the protocol is newline-delimited JSON-RPC, which
+`serde_json` already covers.
 
 ---
 

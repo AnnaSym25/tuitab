@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-03
+
+### Added
+
+- **`tuitab --mcp` runs tuitab as an MCP server**, so an AI assistant can compute over a
+  data file with the same engine the TUI uses instead of doing the arithmetic itself.
+  Register it with a client — for example `claude mcp add tuitab -- tuitab --mcp` — and
+  the assistant gets four tools:
+  - `tuitab_inspect` — sheets or tables, column names with inferred types, row count,
+    sample rows. The first call in any session, so column names are read rather than
+    guessed.
+  - `tuitab_query` — a pipeline of `filter`, `select`, `sort`, `compute`, `group_by`,
+    `frequency`, `pivot`, `join` and `limit`, applied in order. Several pipelines in one
+    call share a single load of the file. Results come back as JSON, or go to a file via
+    `output.path` in any supported format.
+  - `tuitab_describe` — the per-column profile behind the `I` key.
+  - `tuitab_jq` — jq programs over nested JSON, JSONL, YAML and TOML.
+- There is no SQL and no arbitrary code in the tool surface: the model sends structured
+  operations, each one mapping onto a function tuitab already had, and gets back numbers
+  Polars computed. The server ships its own documentation — the tool list and usage notes
+  reach the model on connect.
+- Numbers are returned raw rather than formatted: percentages arrive as fractions, and
+  currency as plain numbers. Files written through `output.path` keep the display
+  formatting, because those are for a person to read.
+- No new dependencies. MCP over stdio is newline-delimited JSON-RPC, which the existing
+  `serde_json` already covers, so the TUI build is unchanged in size and in what it pulls
+  in.
+
+### Changed
+
+- The per-column profile moved out of the TUI into `data::describe`, shared by the `I`
+  key and `tuitab_describe`. Behaviour is unchanged, and the extraction was verified
+  against the previous implementation cell by cell.
+- **`I` now reports a stable `mode`.** Ties were broken by hash iteration order, so a
+  column of unique values gave a different answer on different runs — Rust seeds its
+  hasher randomly per process. The most frequent value now wins, and equal counts break
+  by first appearance.
+- The MCP profile labels the standard deviation `stdev_pop`, because the one `describe`
+  computes is the population figure while the footer aggregator of the same name is the
+  sample one. The TUI label is unchanged.
+
 ## [0.5.0] - 2026-07-28
 
 ### Added
@@ -268,7 +309,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Non-English keyboard remapping
 - Three binary aliases: `tuitab`, `ttab`, `tt`
 
-[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/denisotree/tuitab/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/denisotree/tuitab/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/denisotree/tuitab/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/denisotree/tuitab/compare/v0.4.1...v0.4.2

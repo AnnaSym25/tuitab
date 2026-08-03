@@ -1,6 +1,6 @@
 [package]
 name = "tuitab"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 authors = ["denisotree"]
 description = "Terminal tabular data explorer — CSV/JSON/YAML/TOML/Parquet/Excel/SQLite viewer with filtering, sorting, pivot tables, and charts"
@@ -77,6 +77,12 @@ incremental = true
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# The bundled DuckDB amalgamation compiles to ~280 .o files that are ~90% DWARF,
+# 2.9 GB per build-dir hash — and cargo keeps a fresh copy on every version or
+# feature change.  We never step through DuckDB's C++; drop its debug info.
+[profile.dev.package.libduckdb-sys]
+debug = 0
 
 [profile.release]
 opt-level = 3
