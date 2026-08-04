@@ -46,11 +46,23 @@ salary > 90000
 department == "Engineering"
 status != "closed"
 region in ("North", "South")
+contains(name, "^A")
 ```
 
-> There is no `and` / `or` / `contains`. To match text, use `==` on an exact
-> value, `in (...)` for a set, `substring(...)`, or the regex form of `|` /
-> [find & replace](recipes.md).
+Combine conditions with `and`, `or` and `not`. `or` binds loosest, then `and`,
+then `not`, so `a and b or c` reads as `(a and b) or c` — parenthesise when you
+mean otherwise:
+
+```text
+department == "Engineering" and age > 40
+department == "HR" or department == "Marketing"
+not (status == "closed")
+(region == "North" or region == "South") and amount > 1000
+```
+
+> An operand that is not a genuine boolean makes the whole clause null rather
+> than quietly counting as false, so a broken comparison cannot be negated into
+> a confident answer.
 
 ## Functions
 

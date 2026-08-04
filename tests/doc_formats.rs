@@ -1113,7 +1113,7 @@ fn deleting_rows_from_a_sorted_view_leaves_no_stale_sort() {
         .map(|d| s.dataframe.get_physical(s.dataframe.row_order[d], 0))
         .collect();
     assert!(
-        s.sort_col.is_none(),
+        s.sort_keys.is_empty(),
         "a sort marker that no longer describes the rows ({:?}) is worse than none",
         shown
     );

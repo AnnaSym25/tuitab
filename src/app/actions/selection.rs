@@ -4,7 +4,6 @@ use crate::sheet::Sheet;
 use crate::types::{Action, AppMode};
 use polars::prelude::*;
 use ratatui::widgets::ScrollbarState;
-use std::collections::HashSet;
 
 impl App {
     pub(crate) fn handle_selection_action(&mut self, action: Action) -> Option<Action> {
@@ -250,8 +249,7 @@ impl App {
                     s.dataframe.modified = true;
                     // The frame is rebuilt in the tree's order, so a sort marker left
                     // over from before would claim an ordering the rows no longer have.
-                    s.sort_col = None;
-                    s.sort_desc = false;
+                    s.sort_keys.clear();
                     let vis = s.dataframe.visible_row_count();
                     s.scroll_state = ScrollbarState::new(vis.saturating_sub(1));
                     let sel = s
@@ -343,9 +341,6 @@ impl App {
         let pdf = polars::prelude::DataFrame::new_infer_height(series_vec)
             .unwrap_or_else(|_| polars::prelude::DataFrame::empty());
 
-        let row_count = selected_physical.len();
-        let row_order: Vec<usize> = (0..row_count).collect();
-
         let title = match (has_selected_rows, has_selected_cols) {
             (true, true) => format!(
                 "{} [{}rows, {}cols]",
@@ -358,15 +353,7 @@ impl App {
             (false, false) => unreachable!(),
         };
 
-        let mut new_df = DataFrame {
-            df: pdf,
-            columns: new_columns,
-            row_order: row_order.clone().into(),
-            original_order: row_order.into(),
-            selected_rows: HashSet::new(),
-            modified: false,
-            aggregates_cache: None,
-        };
+        let mut new_df = DataFrame::from_parts(pdf, new_columns);
         new_df.calc_widths(40, 1000);
 
         let status = match (has_selected_rows, has_selected_cols) {
@@ -391,10 +378,10 @@ impl App {
     }
 
     fn apply_select_random(&mut self) {
-        use rand::prelude::IndexedRandom;
         let s = self.stack.active_mut();
         let raw = s.select_count_input.as_str().trim().to_string();
         s.select_count_input.clear();
+
         let n: usize = match raw.parse() {
             Ok(v) if v > 0 => v,
             _ => {
@@ -403,44 +390,29 @@ impl App {
                 return;
             }
         };
-        let visible: Vec<usize> = s.dataframe.row_order.iter().copied().collect();
-        let total = visible.len();
-        let take = n.min(total);
-        let mut rng = rand::rng();
-        let chosen: Vec<usize> = visible.sample(&mut rng, take).copied().collect();
-        s.dataframe.selected_rows.clear();
-        s.dataframe.selected_rows.extend(chosen);
+
+        let total = s.dataframe.visible_row_count();
+        let chosen =
+            crate::data::dedup::sample_rows(&s.dataframe, n, crate::data::dedup::random_seed());
+        let take = chosen.len();
+        s.dataframe.selected_rows = chosen.into_iter().collect();
+
         self.mode = AppMode::Normal;
         self.status_message = format!("Selected {} random row(s) of {} visible", take, total);
     }
 
     fn select_duplicates(&mut self) {
-        use std::collections::HashMap;
         let s = self.stack.active_mut();
-        let n_cols = s.dataframe.col_count();
-        let mut groups: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
-        for &phys in s.dataframe.row_order.iter() {
-            let key: Vec<String> = (0..n_cols)
-                .map(|c| s.dataframe.get_physical(phys, c))
-                .collect();
-            groups.entry(key).or_default().push(phys);
-        }
-        s.dataframe.selected_rows.clear();
-        let mut count = 0usize;
-        for rows in groups.into_values() {
-            if rows.len() > 1 {
-                for r in rows {
-                    s.dataframe.selected_rows.insert(r);
-                    count += 1;
-                }
-            }
-        }
+        let duplicates = crate::data::dedup::duplicate_rows(&s.dataframe, &[]);
+        s.dataframe.selected_rows = duplicates.iter().copied().collect();
+        let count = duplicates.len();
+
         self.mode = AppMode::Normal;
-        if count == 0 {
-            self.status_message = "No duplicate rows found".to_string();
+        self.status_message = if count == 0 {
+            "No duplicate rows found".to_string()
         } else {
-            self.status_message = format!("Selected {} duplicate row(s)", count);
-        }
+            format!("Selected {} duplicate row(s)", count)
+        };
     }
 
     fn start_smart_dedup(&mut self) {
@@ -487,89 +459,52 @@ impl App {
         self.smart_dedup_with_keys(&key_cols, Some(pick));
     }
 
-    /// Deduplicate `row_order` by `key_cols`, keeping one row per group.
-    ///
-    /// `tiebreaker`:
-    ///   - `None` → first-seen row in `row_order` is kept (used when keys cover all columns).
-    ///   - `Some(None)` → random row from the group is kept.
-    ///   - `Some(Some((col, descending)))` → row with min/max value of `col` is kept.
-    ///     Comparison tries f64 parse first, falls back to string compare; this handles
-    ///     numeric columns and ISO-formatted dates without per-type dispatch.
+    /// `tiebreaker` mirrors the popup: `None` keeps the first of each group,
+    /// `Some(None)` picks at random, `Some(Some((col, desc)))` keeps the row
+    /// with the largest or smallest value in that column.
     fn smart_dedup_with_keys(
         &mut self,
         key_cols: &[usize],
         tiebreaker: Option<Option<(usize, bool)>>,
     ) {
-        use rand::prelude::IndexedRandom;
-        use std::collections::{HashMap, HashSet};
+        use crate::data::dedup::Keep;
 
-        let s = self.stack.active_mut();
-        s.push_undo();
-        let old_count = s.dataframe.visible_row_count();
-
-        let mut groups: HashMap<Vec<String>, Vec<usize>> = HashMap::new();
-        for &phys in s.dataframe.row_order.iter() {
-            let key: Vec<String> = key_cols
-                .iter()
-                .map(|&c| s.dataframe.get_physical(phys, c))
-                .collect();
-            groups.entry(key).or_default().push(phys);
-        }
-
-        let keepers: HashSet<usize> = match tiebreaker {
-            None => groups.values().map(|rows| rows[0]).collect(),
-            Some(None) => {
-                let mut rng = rand::rng();
-                groups
-                    .values()
-                    .map(|rows| *rows.choose(&mut rng).unwrap_or(&rows[0]))
-                    .collect()
-            }
-            Some(Some((col, desc))) => groups
-                .values()
-                .map(|rows| {
-                    let mut best_idx = rows[0];
-                    let mut best_val = s.dataframe.get_physical(best_idx, col);
-                    for &phys in rows.iter().skip(1) {
-                        let val = s.dataframe.get_physical(phys, col);
-                        let ord = compare_dedup_values(&val, &best_val);
-                        let take = if desc {
-                            ord == std::cmp::Ordering::Greater
-                        } else {
-                            ord == std::cmp::Ordering::Less
-                        };
-                        if take {
-                            best_idx = phys;
-                            best_val = val;
-                        }
-                    }
-                    best_idx
-                })
-                .collect(),
+        let keep = match tiebreaker {
+            None => Keep::First,
+            Some(None) => Keep::Random(crate::data::dedup::random_seed()),
+            Some(Some((col, true))) => Keep::Max(col),
+            Some(Some((col, false))) => Keep::Min(col),
         };
 
-        let new_order: Vec<usize> = s
-            .dataframe
-            .row_order
-            .iter()
-            .copied()
-            .filter(|i| keepers.contains(i))
-            .collect();
-        s.dataframe.row_order = new_order.into();
-        s.dataframe.original_order = s.dataframe.row_order.clone();
-        s.dataframe.selected_rows.clear();
-        s.dataframe.modified = true;
-        s.dataframe.aggregates_cache = None;
-        s.table_state.select(Some(0));
+        let s = self.stack.active_mut();
+        let old_count = s.dataframe.visible_row_count();
 
-        let new_count = s.dataframe.visible_row_count();
+        match crate::data::dedup::deduplicate(&s.dataframe, key_cols, keep) {
+            Ok(survivors) => {
+                s.push_undo();
+                s.dataframe.row_order = survivors.into();
+                s.dataframe.original_order = s.dataframe.row_order.clone();
+                s.dataframe.selected_rows.clear();
+                s.dataframe.modified = true;
+                s.dataframe.aggregates_cache = None;
+                s.table_state.select(Some(0));
+
+                let new_count = s.dataframe.visible_row_count();
+                self.status_message = format!("Smart dedup: {} → {} rows", old_count, new_count);
+            }
+            Err(e) => self.status_message = e,
+        }
         self.mode = AppMode::Normal;
-        self.status_message = format!("Smart dedup: {} → {} rows", old_count, new_count);
     }
 
+    /// Keep one row per distinct combination of the pinned columns.
+    ///
+    /// Exactly smart dedup with no tiebreaker — it was a second copy of the
+    /// same grouping loop until the two met in `data::dedup`.
     pub(super) fn deduplicate_by_pinned(&mut self) {
-        let s = self.stack.active_mut();
-        let pinned_cols: Vec<usize> = s
+        let pinned: Vec<usize> = self
+            .stack
+            .active()
             .dataframe
             .columns
             .iter()
@@ -578,49 +513,12 @@ impl App {
             .map(|(i, _)| i)
             .collect();
 
-        if pinned_cols.is_empty() {
+        if pinned.is_empty() {
             self.mode = AppMode::Normal;
             self.status_message = "No pinned columns to deduplicate by".to_string();
             return;
         }
 
-        s.push_undo();
-
-        let old_count = s.dataframe.visible_row_count();
-        let mut seen = std::collections::HashSet::new();
-        let mut new_order = Vec::new();
-
-        for &physical_row in s.dataframe.row_order.iter() {
-            let key: Vec<String> = pinned_cols
-                .iter()
-                .map(|&c| s.dataframe.get_physical(physical_row, c).to_string())
-                .collect();
-            if seen.insert(key) {
-                new_order.push(physical_row);
-            }
-        }
-
-        s.dataframe.row_order = new_order.into();
-        s.dataframe.original_order = s.dataframe.row_order.clone();
-        s.dataframe.selected_rows.clear();
-        s.dataframe.modified = true;
-        s.dataframe.aggregates_cache = None;
-        s.table_state.select(Some(0));
-
-        let new_count = s.dataframe.visible_row_count();
-        self.mode = AppMode::Normal;
-        self.status_message = format!("Deduplicated: {} -> {} rows", old_count, new_count);
+        self.smart_dedup_with_keys(&pinned, None);
     }
-}
-
-/// Compare two cell values for the smart-dedup tiebreaker.
-///
-/// Tries numeric parse first so numeric columns sort by value, not by lexical
-/// order. Falls back to string compare, which already gives the right order for
-/// ISO-8601 dates/datetimes.
-fn compare_dedup_values(a: &str, b: &str) -> std::cmp::Ordering {
-    if let (Ok(fa), Ok(fb)) = (a.trim().parse::<f64>(), b.trim().parse::<f64>()) {
-        return fa.partial_cmp(&fb).unwrap_or(std::cmp::Ordering::Equal);
-    }
-    a.cmp(b)
 }

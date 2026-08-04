@@ -210,17 +210,7 @@ impl App {
         {
             Ok((pdf, columns)) => {
                 let row_count = pdf.height();
-                let row_order: Vec<usize> = (0..row_count).collect();
-
-                let mut new_df = crate::data::dataframe::DataFrame {
-                    df: pdf,
-                    columns,
-                    row_order: row_order.clone().into(),
-                    original_order: row_order.into(),
-                    selected_rows: std::collections::HashSet::new(),
-                    modified: false,
-                    aggregates_cache: None,
-                };
+                let mut new_df = crate::data::dataframe::DataFrame::from_parts(pdf, columns);
                 new_df.calc_widths(40, 1000);
 
                 let mut pivot_sheet = crate::sheet::Sheet::new(

@@ -7,6 +7,199 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-04
+
+### Fixed
+
+- **Repeating `z` + arrow moved the column every other time, and moved the
+  cursor in between.** The first chord leaves the app in a column-move mode
+  where bare arrows keep reordering — but the chord people repeat is the whole
+  `z` + arrow, and that `z` fell through to the mode's catch-all and left it, so
+  the arrow behind it moved the cursor. The mode has behaved this way since
+  before 0.6.0; what made it visible is the compound sort added here, because
+  the drifted cursor now had `z[` to land on and the sort went to a column the
+  user never pointed at. `z` re-opens the prefix from column-move mode, on
+  Cyrillic layouts too — `я`, and `р`/`д` for left and right.
+- **The sort arrow never fitted in the header.** Column widths are measured from
+  the name alone, so `!`, `*` and `▲` had no room reserved and the whole string
+  was truncated from the right — cutting off the arrow, which is last. A
+  compound sort made it worse by needing a third column for the rank digit. The
+  name now gives way instead, since it is the part with information to spare.
+- **A running total could only be ordered by re-sorting the table.** `cum_sum`,
+  `lag`, `lead` and `row_number` read the frame as it stood, so totalling by
+  date meant sorting by date first — a change to the table nobody asked for, and
+  one the documentation used to recommend. `zw` now asks which column orders the
+  rows, and `window` takes `order_by`: the rows are put in that order to compute
+  the column and the answer comes back where they already are. Ties keep their
+  relative order and empty values sort last. The eight functions that read no
+  order refuse an `order_by` rather than dropping it, since
+  `RANK() OVER (ORDER BY x)` is a reasonable thing to ask for and a bad thing to
+  answer differently.
+- **A rank in the TUI was always ascending.** The server's `window` operation
+  accepts `desc`; `zw` had no way to say it, so one of the two surfaces could
+  not ask for a top-N at all. Picking `rank` or
+  `dense_rank` now asks which end comes first, before the partition picker.
+  Ascending stays the default on both surfaces, and a descending rank is named
+  `<col>_rank_desc` so it can sit beside the ascending one.
+- **`is_empty` matched nothing, on any file.** It compared the column against a
+  null literal, and in three-valued logic `x == null` is null rather than true.
+  Since polars reads a blank CSV field as null, a blank cell matched neither
+  `is_empty` nor `not_empty` — it fell out of both halves of a partition that is
+  supposed to cover every row.
+- **Filtering a date column was impossible.** Polars refuses to compare a
+  temporal column with a string and nothing cast either side. Dates now compare
+  as ISO text, which orders identically to chronology.
+- **A quoted number no longer fails against a numeric column.** `"30"` where
+  `30` was meant is a slip worth absorbing; `"a lot"` is still a type error.
+- **Integer ids above 2^53 stopped being distinguishable.** JSON has one number
+  type, so an id arrived as `f64` and promoted the column to float; two
+  neighbouring ids then matched the same query. Integral literals stay integral.
+- **A whole-frame condition reported "1 row matched".** `mean(age) > 30` lowers
+  to a single verdict about the table, which applies to all its rows or none —
+  enumerating it answered about row zero and called that the answer.
+- **A refused filter said only that it had been refused.** Five different causes
+  shared one message; the real reason now reaches the caller.
+- **`z[` left the z-prefix open**, so the next key was read as a z-command:
+  pressing `d` to delete selected rows deleted a column instead, and a compound
+  sort could not be typed at all.
+- **Deleting or moving a sorted column corrupted the sort.** Keys were stored as
+  column positions, which every column operation renumbers — deleting one left a
+  key pointing past the end and the next `z[` panicked. Keys are stored by name
+  and resolved when used.
+- **`zw` on a JSON/YAML/TOML sheet broke it permanently.** Adding a column
+  desynchronised the table from its document, after which editing refused for
+  the rest of the session. It now declines, as `zf` already did.
+- **A new column taking an existing name desynchronised the table.** Polars
+  replaces the old column while the metadata was appended regardless, so a
+  reader received one more header than there were values in each row. Both
+  `window` and `compute` now refuse the collision.
+- **Transposing a table that merely had a pinned column called `column`**
+  inverted it instead, dropping a column. Recognising its own output is now a
+  flag nothing but the transpose sets, rather than a shape ordinary data can
+  have — `build_multi_frequency_table` pins its group columns, so a frequency
+  table followed by a transpose was enough to trigger it.
+- **A sort polars refused returned quietly**, leaving the rows as they were with
+  nothing to distinguish that from an already-sorted table.
+- **A projection changed a column's reported type.** `select` built its frame by
+  hand and skipped the reconciliation every other derived table gets.
+- **Adding a window column threw away the sheet's state.** `r` no longer
+  restored the file's own row order, and a selection disappeared under the user,
+  because the added column was built as a fresh table rather than as an
+  addition.
+- **`zw` refused eight of its twelve functions on a text column**, with a
+  message about percent columns nobody had asked for — it was being judged by a
+  gate written for `zF`. `row_number` reads no column at all. A function that
+  does need numbers now names itself when it declines.
+- **A window column is inserted beside the column it describes** rather than at
+  the far right, where a wide table put it off-screen.
+- **A frequency table ordered its groups differently between runs.** Groups came
+  back in hash order and ties in count fell where they may. Order is now first
+  appearance in the data, which is stable and means something.
+- **A group of blank cells was counted as zero rows** and given a zero share,
+  because the count skipped missing values while claiming to count rows.
+- **A frequency table silently dropped an aggregate over one of its grouping
+  columns**, having promised to refuse aggregates it cannot compute.
+- **`zF` and `T` corrupted a JSON/YAML/TOML sheet**, exactly as `zw` did: the
+  table stopped matching its document, editing refused for the rest of the
+  session, and the result vanished at the next reprojection. `zf` had always
+  declined; these two now do too.
+- **Sorting and every chord were unreachable on a non-Latin layout.** The layout
+  translation ran in a fallback at the bottom of Normal mode — a second copy of
+  the key bindings that was already missing the brackets, and that never saw the
+  second key of a chord at all, so `zw`, `gb`, `z[` and `z]` could not be typed.
+  Translation now happens once, before anything reads the key, and the duplicate
+  table is gone.
+- **Random sampling was quadratic in the size of the table.** Restoring the
+  table's order used a linear scan per comparison, so a thousand rows out of a
+  million was on the order of 10^10 operations. Positions are drawn and sorted
+  instead.
+- **An aggregate in an MCP `compute` ignored the preceding `filter`.** A pipeline
+  that narrowed the rows and then asked for `amount / sum(amount)` divided by the
+  total of every row in the file, dropped ones included — a share-of-total that
+  looked entirely reasonable and was not. Every pipeline operation now hands the
+  next one a materialised frame, so nothing downstream can reach past the view to
+  the data underneath.
+- **A column whose name looks like a regular expression addressed the wrong
+  columns — or none.** Polars reads a name that starts with `^` and ends with `$`
+  as a pattern selecting every column it matches, and tuitab passed header names
+  straight through. A file with a column literally called `^total$` turned a
+  frequency table into "unable to find column Count" and a pivot into "not
+  found", in the TUI as much as over MCP. Column references are now built as
+  names rather than parsed as patterns.
+- **A row filter that legitimately matched nothing was silently recomputed by a
+  different evaluator.** The fallback to per-row evaluation triggered on an empty
+  result rather than on the vectorised path failing, so "no rows matched" — an
+  answer — was treated as a failure and answered again with different semantics.
+- **Retyping a column left aggregators behind that its new type cannot carry.**
+  Assigning `sum` to a numeric column and then switching it to String with `t`
+  kept the aggregator marked on the column while the footer and every frequency
+  table silently skipped it. Incompatible aggregators are now dropped when the
+  type changes.
+
+### Added
+
+- **`and`, `or` and `not` in expressions**, so `department == "HR" or department
+  == "Marketing"` works wherever an expression does — including the `|` row
+  filter, which needed no interface change to gain it. `or` binds loosest, then
+  `and`, then `not`. Also `contains(col, regex)`.
+- **The MCP server reports any random seed it drew for you**, so an unseeded
+  sample or dedup can be repeated by passing the seed back.
+- **Window functions.** `zw` adds a column computed from the rows around each
+  row — `row_number`, `rank`, `dense_rank`, `cum_sum`, `lag`, `lead`, a group's
+  `sum`/`avg`/`min`/`max`/`count` repeated on its rows, and `pct_of_total`. It
+  reuses the partition picker `zF` already had, so a window can be scoped to a
+  group. In MCP: `{"window": {"fn": "rank", "col": "salary", "over":
+  ["department"], "desc": true}}`.
+
+  `cum_sum`, `lag`, `lead` and `row_number` read the rows in their current
+  order, so sort first. `zf` and `zF` now call the same function rather than
+  building their own window expression.
+- **Transposing, deduplicating and random sampling reached MCP**, having lived
+  only in the terminal: `{"transpose": {}}`, `{"dedup": {...}}`,
+  `{"duplicates": {...}}`, `{"sample": {"n": 100, "seed": 42}}`.
+- **`gb` groups by the pinned columns**, computing the aggregates marked with
+  `+` on the others. Unlike `F`, which ranks groups by how many rows fall in
+  each, this returns exactly the aggregates asked for, in the order asked for.
+- **A grand total.** `{"aggregate": [...]}` over MCP answers "what is the total
+  revenue" without inventing a grouping column to hang it on.
+- **`any_of` gives the MCP filter an OR**, and a predicate may now compare two
+  columns: `{"col": "revenue", "op": "gt", "value": {"col": "cost"}}`.
+- **Sorting by several keys at once.** `z[` and `z]` add the cursor column as a
+  further, less significant key to the sort already running, and the header shows
+  each key's rank. In MCP: `{"sort": {"by": [{"col": "region"}, {"col": "amount",
+  "desc": true}]}}`.
+
+  Two sorts in sequence are not an equivalent: a single-key sort does not promise
+  to preserve the order of rows that tie on its key, so the first ordering may or
+  may not survive the second. It happens to survive on small frames, which is
+  worse than failing outright.
+- The in-app help (`?`) documents sorting, which it never has.
+
+### Changed
+
+- **The two surfaces are now held together by the compiler.** A test classifies
+  every one of the 317 terminal actions as sharing a function with a named
+  server operation, expressible with what the server has, belonging to the
+  interface alone, or a declared gap — and the match is exhaustive, so adding an
+  action breaks the build until someone answers "and how does a model do this?".
+  A mirror match does the same for every server operation. Two gaps are declared
+  today: find & replace in a column, and splitting a column by a delimiter.
+- **Random selection takes a seed.** Sampling and the random dedup keeper drew
+  from the system source, so the answer could not be repeated — poor form for a
+  tool whose numbers get quoted. Both now accept a seed, and MCP reports the one
+  it used.
+- **Both surfaces now run the same filter.** The terminal's typed expressions and
+  the server's structured predicates compile into one expression tree and one
+  evaluator, where before they shared nothing — which is how the server ended up
+  with a predicate language the terminal could not express, and the terminal kept
+  a fallback the server never inherited. Roughly 170 lines of duplicate logic
+  went with it. Grouping moved the same way, so `gb` and `group_by` cannot drift.
+- Derived tables — frequency, pivot, transpose, group-by, describe — are built
+  through one constructor rather than eleven copies of the same struct literal.
+  The type correction that one copy had, where an average over an integer column
+  is reported as a float rather than inheriting the integer label, now applies to
+  all of them.
+
 ## [0.6.0] - 2026-08-03
 
 ### Added
@@ -309,7 +502,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Non-English keyboard remapping
 - Three binary aliases: `tuitab`, `ttab`, `tt`
 
-[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/denisotree/tuitab/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/denisotree/tuitab/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/denisotree/tuitab/compare/v0.4.3...v0.5.0
 [0.4.3]: https://github.com/denisotree/tuitab/compare/v0.4.2...v0.4.3

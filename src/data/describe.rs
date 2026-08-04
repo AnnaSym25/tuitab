@@ -206,7 +206,6 @@ pub fn describe(df: &DataFrame) -> DataFrame {
     let pdf = polars::prelude::DataFrame::new_infer_height(series_vec)
         .unwrap_or_else(|_| polars::prelude::DataFrame::empty());
 
-    let row_order: Vec<usize> = (0..METRICS.len()).collect();
     let mut columns: Vec<ColumnMeta> = std::iter::once("metric".to_string())
         .chain(df.columns.iter().map(|c| c.name.clone()))
         .map(ColumnMeta::new)
@@ -214,15 +213,7 @@ pub fn describe(df: &DataFrame) -> DataFrame {
     // Keep the metric names visible while scrolling sideways.
     columns[0].pinned = true;
 
-    let mut out = DataFrame {
-        df: pdf,
-        columns,
-        row_order: row_order.clone().into(),
-        original_order: row_order.into(),
-        selected_rows: HashSet::new(),
-        modified: false,
-        aggregates_cache: None,
-    };
+    let mut out = DataFrame::from_parts(pdf, columns);
     out.calc_widths(40, 500);
     out
 }

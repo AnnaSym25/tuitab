@@ -66,8 +66,18 @@ pub struct Sheet {
     pub left_col: usize,
 
     // ── Sort state ────────────────────────────────────────────────────────────
-    pub sort_col: Option<usize>,
-    pub sort_desc: bool,
+    /// Active sort keys, most significant first: `(column name, descending)`.
+    ///
+    /// A list rather than a single column because `[`/`]` replace the sort while
+    /// `z[`/`z]` extend it — and two single-key sorts are not a compound one
+    /// (see [`crate::data::dataframe::DataFrame::sort_by_keys`]).
+    ///
+    /// **Names, not indices.** Deleting a column, moving one with `z←`, or
+    /// pinning one all renumber `columns`, and a stored index would then name a
+    /// different column than the one the user sorted — or none at all, which
+    /// panicked. A name either still resolves or it does not, and
+    /// [`Self::resolved_sort_keys`] drops the ones that do not.
+    pub sort_keys: Vec<(String, bool)>,
 
     // ── Search state (/) ──────────────────────────────────────────────────────
     pub search_input: TextInput,
@@ -149,8 +159,7 @@ impl Sheet {
             scroll_state: ScrollbarState::new(row_count.saturating_sub(1)),
             top_row: 0,
             left_col: 0,
-            sort_col: None,
-            sort_desc: false,
+            sort_keys: Vec::new(),
             search_input: TextInput::new(),
             search_pattern: None,
             search_col: None,
@@ -272,11 +281,27 @@ impl Sheet {
         }
     }
 
+    /// Sort keys as column indices, skipping any whose column is gone.
+    ///
+    /// Resolved at the moment of use rather than kept in step by every
+    /// operation that reorders columns — there are three of those, and each one
+    /// forgetting is a bug that only shows up later.
+    pub fn resolved_sort_keys(&self) -> Vec<(usize, bool)> {
+        self.sort_keys
+            .iter()
+            .filter_map(|(name, desc)| {
+                self.dataframe
+                    .column_index(name)
+                    .ok()
+                    .map(|idx| (idx, *desc))
+            })
+            .collect()
+    }
+
     /// Reset the view after the table was rebuilt from scratch (a reprojection).  Sort
     /// and search state refer to columns that may no longer exist, so they go too.
     pub fn reset_view_state(&mut self) {
-        self.sort_col = None;
-        self.sort_desc = false;
+        self.sort_keys.clear();
         self.search_pattern = None;
         self.search_col = None;
         self.top_row = 0;

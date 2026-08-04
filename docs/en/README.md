@@ -15,6 +15,7 @@ A fast, keyboard-driven terminal explorer for tabular data —
 | [Charts](charts.md) | Histogram, frequency, line, and grouped-bar charts; pinning & drill-down |
 | [JOIN](join.md) | The step-by-step JOIN wizard and join types |
 | [Pivot tables](pivot.md) | Pivot syntax, aggregations, and worked examples |
+| [MCP server](mcp.md) | Letting an AI assistant compute with tuitab's engine: tools, operations, connecting |
 | [Recipes](recipes.md) | Task-oriented how-tos: dedup, % of total, clipboard, export, and more |
 
 ## At a glance

@@ -8,6 +8,9 @@ mod input;
 mod join;
 mod misc;
 mod type_select;
+mod window_dir;
+mod window_fn;
+mod window_order;
 
 pub use aggregator::{render_aggregator_popup, render_partition_select_popup};
 pub use choice::render_choice_popup;
@@ -20,6 +23,9 @@ pub use join::{
 };
 pub use misc::{render_chart_agg_popup, render_confirm_popup, render_copy_format_popup};
 pub use type_select::{render_currency_popup, render_type_select_popup};
+pub use window_dir::render_window_dir_popup;
+pub use window_fn::render_window_fn_popup;
+pub use window_order::render_window_order_popup;
 
 pub(super) fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::default()

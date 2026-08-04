@@ -1,6 +1,6 @@
 [package]
 name = "tuitab"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 authors = ["denisotree"]
 description = "Terminal tabular data explorer — CSV/JSON/YAML/TOML/Parquet/Excel/SQLite viewer with filtering, sorting, pivot tables, and charts"
@@ -48,7 +48,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
 bincode = "1"
 arboard = { version = "3", default-features = false }
-polars = { version = "0.53", default-features = false, features = ["csv", "lazy", "dtype-date", "dtype-datetime", "strings", "parquet", "serde", "pivot", "is_in"] }
+polars = { version = "0.53", default-features = false, features = ["csv", "lazy", "dtype-date", "dtype-datetime", "strings", "parquet", "serde", "pivot", "is_in", "regex", "rank", "cum_agg"] }
 libc = "0.2"
 calamine = "0.36"
 rusqlite = { version = "0.40", features = ["bundled"] }

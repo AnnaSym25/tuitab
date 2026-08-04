@@ -31,11 +31,9 @@ use crate::ui;
 use crate::ui::text_input::TextInput;
 use color_eyre::Result;
 use crossterm::event::{self, Event};
-use polars::prelude::*;
 use ratatui::widgets::ScrollbarState;
 use ratatui::DefaultTerminal;
 use regex::Regex;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -57,6 +55,9 @@ pub struct App {
 
     pub save: SaveState,
     pub aggregator: AggregatorState,
+    pub window_fn: crate::app_state::WindowFnState,
+    /// Which window function the partition picker is collecting columns for.
+    pub pending_window_fn: Option<crate::data::window::WindowFn>,
     pub col_op_literal: bool,
     pub type_select: TypeSelectState,
     pub partition: PartitionState,
@@ -89,6 +90,8 @@ impl App {
             cursor_cell_overflow: None,
             save,
             aggregator: AggregatorState::default(),
+            window_fn: crate::app_state::WindowFnState::default(),
+            pending_window_fn: None,
             col_op_literal: true,
             type_select: TypeSelectState::default(),
             partition: PartitionState::default(),
@@ -415,8 +418,7 @@ impl App {
             let s = self.stack.active_mut();
             s.undo_stack.clear();
             s.redo_stack.clear();
-            s.sort_col = None;
-            s.sort_desc = false;
+            s.sort_keys.clear();
             s.search_pattern = None;
             s.search_col = None;
             s.dataframe.selected_rows.clear();
@@ -564,24 +566,10 @@ impl App {
             }
 
             // ── Sorting ───────────────────────────────────────────────────────
-            Action::SortAscending => {
-                let s = self.stack.active_mut();
-                s.push_undo();
-                let col = s.cursor_col;
-                s.dataframe.sort_by(col, false);
-                s.sort_col = Some(col);
-                s.sort_desc = false;
-                s.table_state.select(Some(0));
-            }
-            Action::SortDescending => {
-                let s = self.stack.active_mut();
-                s.push_undo();
-                let col = s.cursor_col;
-                s.dataframe.sort_by(col, true);
-                s.sort_col = Some(col);
-                s.sort_desc = true;
-                s.table_state.select(Some(0));
-            }
+            Action::SortAscending => self.sort_cursor_column(false, false),
+            Action::SortDescending => self.sort_cursor_column(true, false),
+            Action::AddSortKeyAscending => self.sort_cursor_column(false, true),
+            Action::AddSortKeyDescending => self.sort_cursor_column(true, true),
             Action::OpenRow => {
                 let s = self.stack.active();
                 let is_freq = matches!(s.sheet_type, SheetType::FrequencyTable { .. });
@@ -658,11 +646,18 @@ impl App {
                 let s = self.stack.active_mut();
                 s.push_undo();
                 s.dataframe.reset_sort();
-                s.sort_col = None;
+                s.sort_keys.clear();
                 s.table_state.select(Some(0));
             }
             Action::ReloadFile => self.reload_file(),
             Action::TransposeRow => self.transpose_row(),
+            // Transposing replaces the table wholesale, which a document-backed
+            // sheet cannot survive: the projection stops matching the document,
+            // after which editing refuses for the rest of the session and the
+            // result disappears at the next reprojection.
+            Action::TransposeTable if self.stack.active().doc.is_some() => {
+                self.reject_on_doc_sheet("Transposing");
+            }
             Action::TransposeTable => self.transpose_table(),
             Action::DescribeSheet => self.describe_sheet(),
 
@@ -673,6 +668,93 @@ impl App {
                 } else {
                     self.mode = AppMode::Calculating;
                     self.pending_action = Some(Action::OpenFrequencyTable);
+                }
+            }
+            Action::OpenWindowFnSelect => {
+                self.window_fn.select_index = 0;
+                self.window_fn.desc = false;
+                self.window_fn.order_by = None;
+                self.window_fn.order_index = 0;
+                self.mode = AppMode::WindowFnSelect;
+                self.status_message =
+                    "Pick a window function (Enter to choose, Esc to cancel)".to_string();
+            }
+            Action::WindowFnSelectUp => {
+                self.window_fn.select_index = self.window_fn.select_index.saturating_sub(1);
+            }
+            Action::WindowFnSelectDown => {
+                let last = crate::data::window::WindowFn::all().len() - 1;
+                self.window_fn.select_index = (self.window_fn.select_index + 1).min(last);
+            }
+            Action::CancelWindowFnSelect => {
+                self.mode = AppMode::Normal;
+                self.status_message.clear();
+            }
+            Action::ApplyWindowFnSelect => {
+                let all = crate::data::window::WindowFn::all();
+                let function = all[self.window_fn.select_index.min(all.len() - 1)];
+                self.pending_window_fn = Some(function);
+                if function.uses_order_by() {
+                    // "Relative to what came before" needs to know what before
+                    // means. Running totals used to read the file's own order,
+                    // so the only way to total by date was to sort the table —
+                    // which is a change to the table the user did not ask for.
+                    self.mode = AppMode::WindowOrderSelect;
+                } else if function.uses_direction() {
+                    // A rank has to know which end is first, and the answer is
+                    // not guessable from the column: `zw rank` on salary means
+                    // top earner for one question and lowest paid for another.
+                    self.mode = AppMode::WindowDirSelect;
+                } else {
+                    // Hand off to the same partition picker `zF` uses, so a
+                    // window can be scoped to a group without a second kind of
+                    // dialog.
+                    self.open_partition_select();
+                }
+            }
+            Action::WindowOrderSelectUp => {
+                self.window_fn.order_index = self.window_fn.order_index.saturating_sub(1)
+            }
+            Action::WindowOrderSelectDown => {
+                let last = self.stack.active().dataframe.columns.len();
+                self.window_fn.order_index = (self.window_fn.order_index + 1).min(last);
+            }
+            Action::ApplyWindowOrderSelect => {
+                // Row 0 is "the table's order"; column `i` sits at `i + 1`.
+                self.window_fn.order_by = self
+                    .window_fn
+                    .order_index
+                    .checked_sub(1)
+                    .and_then(|i| self.stack.active().dataframe.columns.get(i))
+                    .map(|c| c.name.clone());
+                if self.window_fn.order_by.is_some() {
+                    self.mode = AppMode::WindowDirSelect;
+                } else {
+                    // Nothing to run in a direction.
+                    self.open_partition_select();
+                }
+            }
+            Action::CancelWindowOrderSelect => {
+                self.pending_window_fn = None;
+                self.mode = AppMode::Normal;
+                self.status_message.clear();
+            }
+            Action::WindowDirSelectUp => self.window_fn.desc = false,
+            Action::WindowDirSelectDown => self.window_fn.desc = true,
+            Action::ApplyWindowDirSelect => self.open_partition_select(),
+            Action::CancelWindowDirSelect => {
+                // Same discipline as `CancelWindowFnSelect`: a function left
+                // armed here turned the next `zF` into a rank.
+                self.pending_window_fn = None;
+                self.mode = AppMode::Normal;
+                self.status_message.clear();
+            }
+            Action::OpenGroupBy => {
+                if self.mode == AppMode::Calculating {
+                    self.open_group_by();
+                } else {
+                    self.mode = AppMode::Calculating;
+                    self.pending_action = Some(Action::OpenGroupBy);
                 }
             }
             Action::OpenMultiFrequencyTable => {
@@ -796,47 +878,9 @@ impl App {
         self.mode = AppMode::Normal;
     }
 
+    /// Share of the column's total, for the whole table (`zf`).
     fn create_pct_column(&mut self) {
-        let s = self.stack.active_mut();
-        let col_idx = s.cursor_col;
-        if col_idx >= s.dataframe.columns.len() {
-            return;
-        }
-
-        let meta = &s.dataframe.columns[col_idx];
-        let is_numeric = matches!(
-            meta.col_type,
-            crate::types::ColumnType::Integer
-                | crate::types::ColumnType::Float
-                | crate::types::ColumnType::Percentage
-                | crate::types::ColumnType::Currency
-        );
-
-        if !is_numeric {
-            self.mode = AppMode::Normal;
-            self.status_message = "Percent column only works for numeric columns".to_string();
-            return;
-        }
-
-        let col_name = meta.name.clone();
-        let new_name = format!("{}_pct", col_name);
-
-        // Expression: col / sum(col)
-        let expr_str = format!("{} / sum({})", col_name, col_name);
-        if let Ok(expr) = crate::data::expression::Expr::parse(&expr_str) {
-            s.push_undo();
-            if let Err(e) = s.dataframe.add_computed_column(&new_name, &expr, col_idx) {
-                self.status_message = format!("Error: {}", e);
-            } else {
-                // Set type to Percentage
-                if let Some(c) = s.dataframe.columns.iter_mut().find(|c| c.name == new_name) {
-                    c.col_type = crate::types::ColumnType::Percentage;
-                    c.precision = 2;
-                }
-                self.status_message = format!("Created column '{}'", new_name);
-            }
-        }
-        self.mode = AppMode::Normal;
+        self.add_window(crate::data::window::WindowFn::PctOfTotal, Vec::new());
     }
 
     fn open_partition_select(&mut self) {
@@ -846,20 +890,28 @@ impl App {
             return;
         }
 
-        let meta = &s.dataframe.columns[col_idx];
-        let is_numeric = matches!(
-            meta.col_type,
-            crate::types::ColumnType::Integer
-                | crate::types::ColumnType::Float
-                | crate::types::ColumnType::Percentage
-                | crate::types::ColumnType::Currency
-        );
+        // Only `zF` — a share of a total — needs a number here. `zw` reaches
+        // this picker too, and eight of its twelve functions read no numbers
+        // (`row_number` reads no column at all), so judging them by this gate
+        // refused most of the feature with a message about percent columns the
+        // user never invoked. Those are checked by the window layer, which
+        // knows which function was asked for and says so by name.
+        if self.pending_window_fn.is_none() {
+            let meta = &s.dataframe.columns[col_idx];
+            let is_numeric = matches!(
+                meta.col_type,
+                crate::types::ColumnType::Integer
+                    | crate::types::ColumnType::Float
+                    | crate::types::ColumnType::Percentage
+                    | crate::types::ColumnType::Currency
+            );
 
-        if !is_numeric {
-            self.mode = AppMode::Normal;
-            self.status_message =
-                "Partitioned percent column only works for numeric columns".to_string();
-            return;
+            if !is_numeric {
+                self.mode = AppMode::Normal;
+                self.status_message =
+                    "Partitioned percent column only works for numeric columns".to_string();
+                return;
+            }
         }
 
         self.partition.select_index = 0;
@@ -867,65 +919,75 @@ impl App {
         self.mode = AppMode::PartitionSelect;
     }
 
+    /// Apply whatever the partition picker was collecting columns for.
+    ///
+    /// `zF` goes straight to a partitioned share; `zw` sets
+    /// [`Self::pending_window_fn`] first, so both arrive here.
     fn apply_partitioned_pct(&mut self) {
+        let mut partitions: Vec<String> = self.partition.selected.iter().cloned().collect();
+        // Sorted so the generated column name does not depend on click order.
+        partitions.sort();
+        let function = self
+            .pending_window_fn
+            .take()
+            .unwrap_or(crate::data::window::WindowFn::PctOfTotal);
+        self.add_window(function, partitions);
+    }
+
+    /// Add a window column over the column under the cursor.
+    ///
+    /// Same function the MCP server's `window` operation calls, so the two
+    /// cannot answer differently.
+    fn add_window(&mut self, function: crate::data::window::WindowFn, over: Vec<String>) {
         let s = self.stack.active_mut();
         let col_idx = s.cursor_col;
+        if col_idx >= s.dataframe.columns.len() {
+            self.mode = AppMode::Normal;
+            return;
+        }
         let col_name = s.dataframe.columns[col_idx].name.clone();
 
-        let mut partition_cols: Vec<String> = self.partition.selected.iter().cloned().collect();
-        partition_cols.sort(); // Consistent naming
+        let order_by: Vec<String> = match &self.window_fn.order_by {
+            Some(name) if function.uses_order_by() => vec![name.clone()],
+            _ => Vec::new(),
+        };
 
-        let mut new_name = format!("{}_", col_name);
-        for pc in &partition_cols {
-            new_name.push_str(pc);
-            new_name.push('_');
-        }
-        new_name.push_str("pct");
+        // Everything that changes the answer goes in the name, or the second
+        // window over one column collides with the first and is refused —
+        // a running total by date and one by id are two different columns.
+        let desc = function.uses_direction() && self.window_fn.desc;
+        let as_name = [
+            Some(col_name.as_str()),
+            (!over.is_empty()).then_some("by"),
+            (!over.is_empty()).then(|| over.join("_")).as_deref(),
+            order_by.first().map(|_| "ordered"),
+            order_by.first().map(String::as_str),
+            Some(function.name()),
+            desc.then_some("desc"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("_");
 
-        // Use Polars Lazy API directly for Window Function
-        use polars::prelude::*;
-        let target = col(&col_name);
-        let partition_exprs: Vec<polars::prelude::Expr> = partition_cols.iter().map(col).collect();
+        let spec = crate::data::window::Spec {
+            function,
+            col: Some(col_name),
+            over,
+            order_by: order_by.clone(),
+            as_name: Some(as_name.clone()),
+            desc,
+            offset: 1,
+        };
 
-        // Window expression: col / sum(col).over(partition_cols)
-        let pct_expr = (target.clone().cast(DataType::Float64)
-            / target.sum().over(partition_exprs).cast(DataType::Float64))
-        .alias(&new_name);
-
-        s.push_undo();
-        match s
-            .dataframe
-            .df
-            .clone()
-            .lazy()
-            .with_column(pct_expr)
-            .collect()
-        {
-            Ok(new_df) => {
-                s.dataframe.df = new_df;
-                let mut meta = crate::data::column::ColumnMeta::new(new_name.clone());
-                meta.col_type = crate::types::ColumnType::Percentage;
-                meta.precision = 2;
-
-                // Find insertion position (after current col)
-                let target_idx = col_idx + 1;
-                s.dataframe.columns.insert(target_idx, meta);
-
-                // Re-align df columns if necessary (though with_column appends, we might need select to reorder)
-                let names: Vec<String> =
-                    s.dataframe.columns.iter().map(|c| c.name.clone()).collect();
-                if let Ok(reordered_df) = s.dataframe.df.select(names) {
-                    s.dataframe.df = reordered_df;
-                }
-
-                s.dataframe.calc_column_width(target_idx, 40, 1000);
-                self.status_message = format!("Created column '{}'", new_name);
+        match crate::data::window::add_window_column(&s.dataframe, &spec) {
+            Ok(df) => {
+                s.push_undo();
+                s.dataframe = df;
+                self.status_message = format!("Created column '{}'", as_name);
             }
-            Err(e) => {
-                self.status_message = format!("Polars error: {}", e);
-            }
+            Err(e) => self.status_message = e,
         }
-
         self.mode = AppMode::Normal;
     }
 
@@ -1182,48 +1244,16 @@ impl App {
 
         if input.starts_with("!=") || input.starts_with("!= ") {
             let expr_str = input.strip_prefix("!= ").unwrap_or(&input[2..]);
-            match Expr::parse(expr_str) {
-                Ok(expr) => {
-                    let mut selected_indices = Vec::new();
-                    // Fast path: Polars
-                    if let Ok(polars_expr) = expr.to_polars_expr() {
-                        if let Ok(visible_df) = s.dataframe.get_visible_df() {
-                            if let Ok(mask_df) = visible_df
-                                .lazy()
-                                .select([polars_expr.alias("mask")])
-                                .collect()
-                            {
-                                if let Ok(mask_col) = mask_df.column("mask") {
-                                    if let Ok(ca) = mask_col.bool() {
-                                        for (i, val) in ca.into_iter().enumerate() {
-                                            if val.unwrap_or(false) {
-                                                selected_indices.push(i);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if selected_indices.is_empty() {
-                        // Slow path: manual evaluation
-                        let col_lookup: std::collections::HashMap<&str, usize> = s
-                            .dataframe
-                            .columns
-                            .iter()
-                            .enumerate()
-                            .map(|(i, c)| (c.name.as_str(), i))
-                            .collect();
-                        for i in 0..s.dataframe.visible_row_count() {
-                            let physical = s.dataframe.row_order[i];
-                            let val = expr.eval(physical, &col_lookup, &s.dataframe);
-                            if let Some(true) = val.as_bool() {
-                                selected_indices.push(i);
-                            }
-                        }
-                    }
-
+            // Free text, so the per-row interpreter is allowed: a user may well
+            // write `year(hire_date) > 2020`, which Polars cannot lower.
+            match Expr::parse(expr_str).and_then(|expr| {
+                crate::data::filter::select_rows(
+                    &s.dataframe,
+                    &expr,
+                    crate::data::filter::Fallback::Allowed,
+                )
+            }) {
+                Ok(selected_indices) => {
                     let count = selected_indices.len();
                     for display_idx in selected_indices {
                         if display_idx < s.dataframe.row_order.len() {
@@ -1458,25 +1488,14 @@ impl App {
         match s.dataframe.build_frequency_table(col, &aggregated_cols) {
             Ok((pdf, columns)) => {
                 let row_count = pdf.height();
-                let row_order: Vec<usize> = (0..row_count).collect();
-
-                let mut df = DataFrame {
-                    df: pdf,
-                    columns,
-                    row_order: row_order.clone().into(),
-                    original_order: row_order.into(),
-                    selected_rows: HashSet::new(),
-                    modified: false,
-                    aggregates_cache: None,
-                };
+                let mut df = DataFrame::from_parts(pdf, columns);
                 // Inherit original column type for Value column
                 df.columns[0].col_type = s.dataframe.columns[col].col_type;
                 df.columns[1].col_type = ColumnType::Integer;
                 df.calc_widths(40, 500);
 
                 let mut freq_sheet = Sheet::new(format!("Freq: {}", col_name), df);
-                freq_sheet.sort_col = Some(1); // Count column is pre-sorted
-                freq_sheet.sort_desc = true;
+                freq_sheet.sort_keys = vec![("Count".to_string(), true)]; // pre-sorted
                 freq_sheet.sheet_type = SheetType::FrequencyTable {
                     group_cols: vec![col_name.clone()],
                 };
@@ -1492,6 +1511,66 @@ impl App {
                 self.mode = AppMode::Normal;
             }
         }
+    }
+
+    /// Group by the pinned columns, computing the aggregates marked on the
+    /// other columns with `+`.
+    ///
+    /// The sibling of `gF`, and the difference is worth knowing: a frequency
+    /// table ranks groups by how many rows fall in each, always carrying a
+    /// `Count` and a share. This gives exactly the aggregates asked for, in
+    /// the order asked for. Same engine as the MCP server's `group_by`.
+    fn open_group_by(&mut self) {
+        let s = self.stack.active();
+
+        let by: Vec<String> = s
+            .dataframe
+            .columns
+            .iter()
+            .filter(|c| c.pinned)
+            .map(|c| c.name.clone())
+            .collect();
+
+        if by.is_empty() {
+            self.status_message = "Pin the columns to group by with '!' first".to_string();
+            self.mode = AppMode::Normal;
+            return;
+        }
+
+        let agg: Vec<crate::data::group::AggSpec> = s
+            .dataframe
+            .columns
+            .iter()
+            .filter(|c| !c.pinned)
+            .flat_map(|c| {
+                c.aggregators
+                    .iter()
+                    .map(|kind| crate::data::group::AggSpec {
+                        col: c.name.clone(),
+                        kind: *kind,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        if agg.is_empty() {
+            self.status_message =
+                "Mark at least one column with '+' to say what to aggregate".to_string();
+            self.mode = AppMode::Normal;
+            return;
+        }
+
+        match crate::data::group::group_by(&s.dataframe, &by, &agg) {
+            Ok(mut grouped) => {
+                let rows = grouped.visible_row_count();
+                grouped.calc_widths(40, 1000);
+                let title = format!("Group by {}", by.join(", "));
+                self.stack.push(crate::sheet::Sheet::new(title, grouped));
+                self.status_message = format!("Grouped into {} rows", rows);
+            }
+            Err(e) => self.status_message = e,
+        }
+        self.mode = AppMode::Normal;
     }
 
     fn open_multi_frequency_table(&mut self) {
@@ -1524,17 +1603,7 @@ impl App {
         {
             Ok((pdf, columns)) => {
                 let row_count = pdf.height();
-                let row_order: Vec<usize> = (0..row_count).collect();
-
-                let mut new_df = crate::data::dataframe::DataFrame {
-                    df: pdf,
-                    columns,
-                    row_order: row_order.clone().into(),
-                    original_order: row_order.into(),
-                    selected_rows: std::collections::HashSet::new(),
-                    modified: false,
-                    aggregates_cache: None,
-                };
+                let mut new_df = crate::data::dataframe::DataFrame::from_parts(pdf, columns);
                 new_df.calc_widths(40, 1000);
 
                 let pinned_names: Vec<&str> = pinned_cols
@@ -1544,8 +1613,7 @@ impl App {
                 let title = format!("MultiFreq: {}", pinned_names.join(", "));
 
                 let mut freq_sheet = crate::sheet::Sheet::new(title, new_df);
-                freq_sheet.sort_col = Some(pinned_cols.len()); // Count column
-                freq_sheet.sort_desc = true;
+                freq_sheet.sort_keys = vec![("Count".to_string(), true)];
                 freq_sheet.sheet_type = SheetType::FrequencyTable {
                     group_cols: pinned_names.iter().map(|&s| s.to_string()).collect(),
                 };
@@ -2221,184 +2289,82 @@ impl App {
         if selected_row >= s.dataframe.visible_row_count() {
             return;
         }
-
         let physical_row = s.dataframe.row_order[selected_row];
 
-        let columns = vec![
-            crate::data::column::ColumnMeta::new("Column".to_string()),
-            crate::data::column::ColumnMeta::new("Value".to_string()),
-        ];
-
-        let mut col_names = Vec::new();
-        let mut col_values = Vec::new();
-
-        for i in 0..s.dataframe.columns.len() {
-            col_names.push(s.dataframe.columns[i].name.clone());
-            col_values.push(s.dataframe.get_physical(physical_row, i).to_string());
+        match crate::data::transpose::transpose_row(&s.dataframe, physical_row) {
+            Ok(df) => {
+                let sheet = crate::sheet::Sheet::new(format!("Row {}", physical_row), df);
+                self.stack.push(sheet);
+                self.status_message = format!("Transposed row {}", physical_row);
+            }
+            Err(e) => self.status_message = e,
         }
-
-        let s1 = polars::prelude::Series::new("Column".into(), &col_names);
-        let s2 = polars::prelude::Series::new("Value".into(), &col_values);
-        let pdf = polars::prelude::DataFrame::new_infer_height(vec![s1.into(), s2.into()])
-            .unwrap_or_else(|_| polars::prelude::DataFrame::empty());
-
-        let row_count = col_names.len();
-        let row_order: Vec<usize> = (0..row_count).collect();
-
-        let mut df = crate::data::dataframe::DataFrame {
-            df: pdf,
-            columns,
-            row_order: row_order.clone().into(),
-            original_order: row_order.into(),
-            selected_rows: std::collections::HashSet::new(),
-            modified: false,
-            aggregates_cache: None,
-        };
-
-        df.calc_widths(40, 500);
-
-        let sheet = crate::sheet::Sheet::new(format!("Row {}", physical_row), df);
-        self.stack.push(sheet);
-        self.status_message = format!("Transposed row {}", physical_row);
     }
 
     fn transpose_table(&mut self) {
-        // Compute new df in isolated scope so the immutable borrow of active() is released
-        let result: Option<(crate::data::dataframe::DataFrame, String)> = {
-            let s = self.stack.active();
-            let ncols = s.dataframe.columns.len();
-            let nrows = s.dataframe.visible_row_count();
+        let transposed = crate::data::transpose::transpose_table(&self.stack.active().dataframe);
 
-            if ncols == 0 || nrows == 0 {
-                None
-            } else {
-                // Detect previously transposed table: first column named "column" and pinned
-                let is_transposed =
-                    s.dataframe.columns[0].name == "column" && s.dataframe.columns[0].pinned;
-
-                // row_labels  → values in the output "column" column (one per output row)
-                // new_col_names → names of the output data columns (one per output col)
-                // data_cols_start → first source column index to treat as data
-                let (row_labels, new_col_names, data_cols_start): (
-                    Vec<String>,
-                    Vec<String>,
-                    usize,
-                ) = if is_transposed {
-                    // Inverse transpose:
-                    //   new column headers = current "column" column values
-                    //   new row labels     = current data column names
-                    let row_labels = s.dataframe.columns[1..]
-                        .iter()
-                        .map(|c| c.name.clone())
-                        .collect();
-                    let new_col_names = (0..nrows)
-                        .map(|r| {
-                            let physical = s.dataframe.row_order[r];
-                            s.dataframe.get_physical(physical, 0).to_string()
-                        })
-                        .collect();
-                    (row_labels, new_col_names, 1)
-                } else {
-                    // Normal transpose:
-                    //   new column headers = "row_{physical}" for each visible row
-                    //   new row labels     = current column names
-                    let row_labels = s.dataframe.columns.iter().map(|c| c.name.clone()).collect();
-                    let new_col_names = (0..nrows)
-                        .map(|r| format!("row_{}", s.dataframe.row_order[r]))
-                        .collect();
-                    (row_labels, new_col_names, 0)
-                };
-
-                let data_ncols = ncols - data_cols_start;
-
-                // row_data[i][r] = value of source column (data_cols_start + i) at display row r
-                let row_data: Vec<Vec<String>> = (data_cols_start..ncols)
-                    .map(|i| {
-                        (0..nrows)
-                            .map(|r| {
-                                let physical = s.dataframe.row_order[r];
-                                s.dataframe.get_physical(physical, i).to_string()
-                            })
-                            .collect()
-                    })
-                    .collect();
-
-                // Build Polars DataFrame.
-                // On inverse transpose (is_transposed=true): only new_col_names columns, no "column" prefix.
-                // On normal transpose: col 0 = "column" with row_labels, col 1+ = new_col_names[j].
-                let mut series_vec: Vec<polars::prelude::Column> = Vec::new();
-
-                if !is_transposed {
-                    let col_names_series =
-                        polars::prelude::Series::new("column".into(), &row_labels);
-                    series_vec.push(col_names_series.into());
-                }
-
-                for (col_idx, col_name) in new_col_names.iter().enumerate() {
-                    let col_vals: Vec<String> = (0..data_ncols)
-                        .map(|i| row_data[i][col_idx].clone())
-                        .collect();
-                    let series = polars::prelude::Series::new(col_name.clone().into(), &col_vals);
-                    series_vec.push(series.into());
-                }
-
-                let pdf = polars::prelude::DataFrame::new_infer_height(series_vec)
-                    .unwrap_or_else(|_| polars::prelude::DataFrame::empty());
-
-                let row_order: Vec<usize> = (0..data_ncols).collect();
-                let mut new_columns: Vec<crate::data::column::ColumnMeta> = if is_transposed {
-                    new_col_names
-                        .iter()
-                        .map(|n| crate::data::column::ColumnMeta::new(n.clone()))
-                        .collect()
-                } else {
-                    std::iter::once("column".to_string())
-                        .chain(new_col_names.iter().cloned())
-                        .map(crate::data::column::ColumnMeta::new)
-                        .collect()
-                };
-                if !is_transposed && !new_columns.is_empty() {
-                    new_columns[0].pinned = true;
-                }
-
-                let mut df = crate::data::dataframe::DataFrame {
-                    df: pdf,
-                    columns: new_columns,
-                    row_order: row_order.clone().into(),
-                    original_order: row_order.into(),
-                    selected_rows: std::collections::HashSet::new(),
-                    modified: false,
-                    aggregates_cache: None,
-                };
-                df.calc_widths(40, 500);
-
-                let col_count = if is_transposed {
-                    new_col_names.len()
-                } else {
-                    new_col_names.len() + 1
-                };
-                let status = format!("Transposed: {} rows, {} columns", data_ncols, col_count);
-                Some((df, status))
-            }
-        };
-
-        match result {
-            None => {
-                self.status_message = "Nothing to transpose".to_string();
-            }
-            Some((df, status)) => {
-                // Replace dataframe in-place (Task 4: no new sheet pushed)
+        match transposed {
+            Ok(df) => {
+                let rows = df.visible_row_count();
+                let cols = df.columns.len();
                 let s = self.stack.active_mut();
                 s.push_undo();
+                // Replaces the sheet's data rather than pushing a new sheet, so
+                // pressing T again inverts what is on screen.
                 s.dataframe = df;
-                s.sort_col = None;
+                s.sort_keys.clear();
                 s.cursor_col = 0;
                 s.top_row = 0;
                 s.left_col = 0;
                 s.table_state.select(Some(0));
-                self.status_message = status;
+                self.status_message = format!("Transposed: {} rows, {} columns", rows, cols);
             }
+            Err(e) => self.status_message = e,
         }
+    }
+
+    /// Sort by the column under the cursor.
+    ///
+    /// `append` is the difference between `[`/`]`, which start a fresh sort, and
+    /// `z[`/`z]`, which add a less significant key to the one already running.
+    /// Sorting by the same column twice replaces its direction rather than
+    /// listing it twice.
+    fn sort_cursor_column(&mut self, descending: bool, append: bool) {
+        let s = self.stack.active_mut();
+        s.push_undo();
+        let col = s.cursor_col;
+
+        let name = s.dataframe.columns[col].name.clone();
+
+        if append {
+            s.sort_keys.retain(|(n, _)| *n != name);
+            s.sort_keys.push((name, descending));
+        } else {
+            s.sort_keys = vec![(name, descending)];
+        }
+
+        let resolved = s.resolved_sort_keys();
+        let s = self.stack.active_mut();
+        if let Err(e) = s.dataframe.sort_by_keys(&resolved) {
+            self.status_message = e;
+            self.mode = AppMode::Normal;
+            return;
+        }
+        s.table_state.select(Some(0));
+
+        if s.sort_keys.len() > 1 {
+            let described: Vec<String> = s
+                .sort_keys
+                .iter()
+                .map(|(n, d)| format!("{}{}", n, if *d { " ▼" } else { " ▲" }))
+                .collect();
+            self.status_message = format!("Sorted by {}", described.join(", then "));
+        }
+
+        // Every other z-command closes the prefix. Leaving it open made the
+        // next keystroke a z-command: `z[` then `d` deleted a column.
+        self.mode = AppMode::Normal;
     }
 
     fn describe_sheet(&mut self) {
@@ -2799,26 +2765,4 @@ fn longest_common_prefix(strs: &[String]) -> String {
         .map(|(i, _)| i)
         .unwrap_or(first.len())]
         .to_owned()
-}
-
-/// Build an ASCII block-character histogram bar for a frequency table cell.
-/// Uses Unicode block elements (▏▎▍▌▋▊▉█) for sub-character precision.
-pub(crate) fn build_bar(count: usize, max_count: usize, bar_width: usize) -> String {
-    if max_count == 0 {
-        return String::new();
-    }
-    const BLOCKS: [char; 9] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
-    let ratio = count as f64 / max_count as f64;
-    let total_eighths = (ratio * bar_width as f64 * 8.0).round() as usize;
-    let full_blocks = total_eighths / 8;
-    let remainder = total_eighths % 8;
-
-    let mut bar = String::with_capacity(bar_width + 1);
-    for _ in 0..full_blocks {
-        bar.push('▉'); // Using 7/8 block instead of full block creates a 1/8 gap to prevent visual merging
-    }
-    if full_blocks < bar_width && remainder > 0 {
-        bar.push(BLOCKS[remainder]);
-    }
-    bar
 }

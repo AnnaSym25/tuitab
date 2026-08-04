@@ -10,6 +10,33 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
         return Action::None;
     }
 
+    // Translate the layout once, before anything looks at the key.
+    //
+    // This used to happen in a fallback arm at the bottom of Normal mode, which
+    // meant a second copy of the bindings that had to be kept in step — it was
+    // already missing the brackets, so sorting did not work on a Cyrillic
+    // layout. And because the fallback lived inside Normal, the *second* key of
+    // a chord was never translated at all: `я` reached the z-prefix and `ц`,
+    // which is `w`, fell through to the cancel arm. Every chord was unreachable.
+    //
+    // Only for modes where a key is a command. Where the user is typing text, a
+    // Cyrillic letter is a Cyrillic letter.
+    let key = match (mode, key.code) {
+        (
+            AppMode::Normal
+            | AppMode::GPrefix
+            | AppMode::ZPrefix
+            | AppMode::YPrefix
+            | AppMode::SPrefix
+            | AppMode::ColumnMove,
+            KeyCode::Char(c),
+        ) => KeyEvent {
+            code: KeyCode::Char(remap_char(c)),
+            ..key
+        },
+        _ => key,
+    };
+
     match mode {
         AppMode::Normal => match key.code {
             // Quit or pop sheet depending on stack depth
@@ -99,49 +126,6 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
             KeyCode::Char('J') => Action::OpenJoin,
             // Help
             KeyCode::Char('?') => Action::ShowHelp,
-            // Non-English keyboard remapping — fall through all the above, then remap
-            KeyCode::Char(c) => {
-                let remapped = remap_char(c);
-                if remapped != c {
-                    // Re-dispatch through Normal mode handling (simple approach: re-check common bindings)
-                    match remapped {
-                        'q' => Action::Quit,
-                        'k' => Action::MoveUp,
-                        'j' => Action::MoveDown,
-                        'h' => Action::MoveLeft,
-                        'l' => Action::MoveRight,
-                        'g' => Action::EnterGPrefix,
-                        'z' => Action::EnterZPrefix,
-                        'y' => Action::EnterYPrefix,
-                        'p' => Action::PasteRows,
-                        'd' => Action::DeleteSelectedRows,
-                        's' => Action::SelectRow,
-                        'u' => Action::UnselectRow,
-                        '/' => Action::StartSearch,
-                        '|' => Action::StartSelectByRegex,
-                        '=' => Action::StartExpression,
-                        '+' => Action::OpenAggregatorSelect,
-                        '-' => Action::ClearAggregators,
-                        'v' => Action::OpenChart,
-                        'r' => Action::ResetSort,
-                        'R' => Action::ReloadFile,
-                        'i' => Action::DescribeSheet,
-                        'e' => Action::StartEdit,
-                        'm' => Action::CycleViewMode,
-                        'F' => Action::OpenFrequencyTable,
-                        'Z' => Action::QuickAggregate,
-                        'U' => Action::Undo,
-                        't' => Action::OpenTypeSelect,
-                        'T' => Action::TransposeTable,
-                        '!' => Action::TogglePinColumn,
-                        'W' => Action::OpenPivotTableInput,
-                        'J' => Action::OpenJoin,
-                        _ => Action::None,
-                    }
-                } else {
-                    Action::None
-                }
-            }
             _ => Action::None,
         },
 
@@ -301,6 +285,7 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
             KeyCode::Char('e') => Action::StartBulkEdit,   // ge → bulk-edit selected rows
             KeyCode::Char('_') => Action::AdjustAllColumnWidths, // g_ → adjust all column widths
             KeyCode::Char('F') => Action::OpenMultiFrequencyTable, // gF → multi frequency table
+            KeyCode::Char('b') => Action::OpenGroupBy,     // gb → group by pinned columns
             KeyCode::Char('D') | KeyCode::Char('d') | KeyCode::Char('U') => {
                 Action::DeduplicateByPinned
             }
@@ -382,6 +367,10 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
             KeyCode::Char('g') => Action::StartColRegexpReplace,
             KeyCode::Char('x') => Action::StartColSplit,
             KeyCode::Char('o') => Action::OpenAs,
+            KeyCode::Char('w') => Action::OpenWindowFnSelect,
+            // z[ / z] extend the sort instead of replacing it, mirroring [ / ]
+            KeyCode::Char('[') => Action::AddSortKeyAscending,
+            KeyCode::Char(']') => Action::AddSortKeyDescending,
             KeyCode::Esc => Action::CancelZPrefix,
             _ => Action::CancelZPrefix,
         },
@@ -430,6 +419,13 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
         AppMode::ColumnMove => match key.code {
             KeyCode::Left | KeyCode::Char('h') => Action::MoveColumnLeft,
             KeyCode::Right | KeyCode::Char('l') => Action::MoveColumnRight,
+            // The mode exists so a run of arrows keeps reordering, but what
+            // opened it was `z` + arrow and that is what people repeat. Letting
+            // the `z` fall through to `_` left the mode, so the arrow after it
+            // moved the *cursor* instead of the column: every second chord did
+            // nothing, and the cursor drifted onto a neighbour that the next
+            // `z[` then sorted by.
+            KeyCode::Char('z') => Action::EnterZPrefix,
             _ => Action::ExitColumnMove,
         },
 
@@ -479,6 +475,30 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
         },
 
         // Partition selection for zF
+        AppMode::WindowFnSelect => match key.code {
+            KeyCode::Up | KeyCode::Char('k') => Action::WindowFnSelectUp,
+            KeyCode::Down | KeyCode::Char('j') => Action::WindowFnSelectDown,
+            KeyCode::Enter => Action::ApplyWindowFnSelect,
+            KeyCode::Esc => Action::CancelWindowFnSelect,
+            _ => Action::None,
+        },
+
+        AppMode::WindowOrderSelect => match key.code {
+            KeyCode::Up | KeyCode::Char('k') => Action::WindowOrderSelectUp,
+            KeyCode::Down | KeyCode::Char('j') => Action::WindowOrderSelectDown,
+            KeyCode::Enter => Action::ApplyWindowOrderSelect,
+            KeyCode::Esc => Action::CancelWindowOrderSelect,
+            _ => Action::None,
+        },
+
+        AppMode::WindowDirSelect => match key.code {
+            KeyCode::Up | KeyCode::Char('k') => Action::WindowDirSelectUp,
+            KeyCode::Down | KeyCode::Char('j') => Action::WindowDirSelectDown,
+            KeyCode::Enter => Action::ApplyWindowDirSelect,
+            KeyCode::Esc => Action::CancelWindowDirSelect,
+            _ => Action::None,
+        },
+
         AppMode::PartitionSelect => match key.code {
             KeyCode::Enter => Action::ApplyPartitionedPct,
             KeyCode::Up | KeyCode::Char('k') => Action::PartitionSelectUp,

@@ -29,8 +29,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let non_row_height = 3 + footer_height;
 
     let cursor_col = sheet.cursor_col;
-    let sort_col = sheet.sort_col;
-    let sort_desc = sheet.sort_desc;
+    let sort_keys = sheet.sort_keys.as_slice();
     let active_display_row = sheet.table_state.selected().unwrap_or(0);
     let table_height = area.height.saturating_sub(non_row_height) as usize;
 
@@ -44,14 +43,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     top_row = top_row.min(max_top);
     let end_row = (top_row + table_height).min(df.visible_row_count());
 
-    let header = make_header_row(
-        &visible_cols,
-        &widths_override,
-        df,
-        cursor_col,
-        sort_col,
-        sort_desc,
-    );
+    let header = make_header_row(&visible_cols, &widths_override, df, cursor_col, sort_keys);
     let data_rows = make_data_rows(
         &visible_cols,
         &widths_override,
@@ -308,14 +300,59 @@ fn build_column_plan(
     (visible_cols, widths_override)
 }
 
+/// Cut `text` down to `width` display columns, never splitting a wide character.
+fn clip(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0usize;
+    for c in text.chars() {
+        let w = UnicodeWidthStr::width(c.to_string().as_str());
+        if used + w > width {
+            break;
+        }
+        used += w;
+        out.push(c);
+    }
+    out
+}
+
+/// Compose the header text for one column, dropping the least informative part
+/// first when it does not fit.
+///
+/// Column widths come from [`crate::data::DataFrame::calc_column_width`], which
+/// measures the name alone — `!`, `*` and the sort arrow have no room reserved.
+/// Truncating the whole string from the right, which is what used to happen,
+/// therefore cut the arrow off every column narrow enough to be sized by its own
+/// name: the arrow is last. A name has spare information in it, the marks do
+/// not, so the name gives way instead.
+///
+/// The two columns held back are the leading space and the trailing type icon,
+/// which the caller draws either side of this text.
+fn fit_header(name: &str, pin: &str, sel: &str, sort: &str, cell_w: usize) -> String {
+    let budget = cell_w.saturating_sub(2);
+    let prefix = format!("{}{}", pin, sel);
+    let prefix_w = UnicodeWidthStr::width(prefix.as_str());
+    if prefix_w >= budget {
+        return clip(&prefix, budget);
+    }
+
+    // Keep the arrow only while a character of the name survives beside it: a
+    // cell holding nothing but `▲` names no column.
+    let sort = if prefix_w + UnicodeWidthStr::width(sort) < budget {
+        sort
+    } else {
+        ""
+    };
+    let for_name = budget - prefix_w - UnicodeWidthStr::width(sort);
+    format!("{}{}{}", prefix, clip(name, for_name), sort)
+}
+
 /// Build the header row: column names with sort arrows, type icons, pin/select markers.
 fn make_header_row(
     visible_cols: &[usize],
     widths_override: &[u16],
     df: &DataFrame,
     cursor_col: usize,
-    sort_col: Option<usize>,
-    sort_desc: bool,
+    sort_keys: &[(String, bool)],
 ) -> Row<'static> {
     let header_cells: Vec<Cell> = visible_cols
         .iter()
@@ -329,43 +366,26 @@ fn make_header_row(
             let icon_ch = col.col_type.icon();
             let icon_str = icon_ch.to_string();
 
-            let sort_mark = if sort_col == Some(actual_col_idx) {
-                if sort_desc {
-                    " ▼"
-                } else {
-                    " ▲"
+            // An arrow for the sort key, plus its rank when more than one is
+            // active — otherwise a compound sort looks like several independent
+            // ones.
+            let sort_mark = match sort_keys.iter().position(|(n, _)| *n == col.name) {
+                Some(rank) => {
+                    let arrow = if sort_keys[rank].1 { "▼" } else { "▲" };
+                    if sort_keys.len() > 1 {
+                        format!(" {}{}", arrow, rank + 1)
+                    } else {
+                        format!(" {}", arrow)
+                    }
                 }
-            } else {
-                ""
+                None => String::new(),
             };
             let pin_mark = if col.pinned { "!" } else { "" };
             let sel_mark = if col.selected { "*" } else { "" };
-            let name_raw = format!("{}{}{}{}", pin_mark, sel_mark, col.name, sort_mark);
-            let name_w = UnicodeWidthStr::width(name_raw.as_str());
             let cell_w = widths_override[i] as usize;
 
-            // Reserve 1 char on the left so the header name doesn't visually
-            // touch the previous column's type icon when column_spacing is 0.
-            let (name_display, padding) = if cell_w < 2 {
-                (String::new(), 0usize)
-            } else if name_w + 2 <= cell_w {
-                (name_raw, cell_w - name_w - 2)
-            } else {
-                let max_name = cell_w.saturating_sub(2);
-                let truncated: String = name_raw
-                    .chars()
-                    .scan(0usize, |acc, c: char| {
-                        let w = UnicodeWidthStr::width(c.to_string().as_str());
-                        if *acc + w <= max_name {
-                            *acc += w;
-                            Some(c)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                (truncated, 0)
-            };
+            let name_display = fit_header(&col.name, pin_mark, sel_mark, &sort_mark, cell_w);
+            let padding = cell_w.saturating_sub(UnicodeWidthStr::width(name_display.as_str()) + 2);
 
             let (name_style, icon_style) = if actual_col_idx == cursor_col {
                 (
@@ -579,4 +599,99 @@ fn make_footer_row(
     Row::new(footer_cells)
         .style(T::footer_style())
         .height(footer_height)
+}
+
+#[cfg(test)]
+mod header_fit {
+    use super::fit_header;
+    use unicode_width::UnicodeWidthStr;
+
+    /// The width of a header cell's text, given what the caller draws around it.
+    fn budget(cell_w: usize) -> usize {
+        cell_w.saturating_sub(2)
+    }
+
+    /// The regression the user hit: a column whose width came from its own name
+    /// has exactly zero slack, so appending the arrow overflowed and the arrow —
+    /// being last — was what got cut. `age` is 3 wide, so its cell is 5.
+    #[test]
+    fn a_column_sized_by_its_name_still_shows_the_sort_arrow() {
+        let fitted = fit_header("age", "", "", " ▲", 5);
+        assert!(
+            fitted.contains('▲'),
+            "the arrow is the point of the header: {:?}",
+            fitted
+        );
+    }
+
+    /// Rank digits make a compound sort three columns wide, not two. The
+    /// compound sort is new, so nothing had ever asked for that third column.
+    #[test]
+    fn a_compound_sort_keeps_its_rank_digit() {
+        let fitted = fit_header("age", "", "", " ▲2", 8);
+        assert_eq!(fitted, "age ▲2");
+    }
+
+    /// With room to spare nothing is touched.
+    #[test]
+    fn a_wide_column_is_left_alone() {
+        assert_eq!(fit_header("amount", "!", "*", " ▼", 20), "!*amount ▼");
+    }
+
+    /// The name gives way, the marks do not — but only while a character of the
+    /// name survives. A cell holding nothing but an arrow names no column.
+    #[test]
+    fn the_arrow_goes_when_no_name_would_be_left() {
+        // Budget 4, marks 2: keeping the arrow too would leave nothing of the
+        // name, so the arrow is what goes.
+        assert_eq!(fit_header("age", "!", "*", " ▲", 6), "!*ag");
+        // One column more and both fit.
+        assert_eq!(fit_header("age", "!", "*", " ▲", 7), "!*a ▲");
+    }
+
+    /// Whatever it drops, the cell must come out exactly the width it was given:
+    /// the caller draws a leading space and a trailing type icon around this
+    /// text and pads the gap, so a byte too many pushes every column to the
+    /// right out of place, and a byte too few leaves a hole.
+    #[test]
+    fn the_cell_comes_out_exactly_the_width_it_was_given() {
+        for cell_w in 2..24usize {
+            for sort in ["", " ▲", " ▼2"] {
+                for (pin, sel) in [("", ""), ("!", ""), ("!", "*")] {
+                    let fitted = fit_header("department", pin, sel, sort, cell_w);
+                    let text_w = UnicodeWidthStr::width(fitted.as_str());
+                    assert!(
+                        text_w <= budget(cell_w),
+                        "width {} overflows cell {}: {:?}",
+                        text_w,
+                        cell_w,
+                        fitted
+                    );
+                    // What `make_header_row` lays down: space + text + padding + icon.
+                    let padding = cell_w.saturating_sub(text_w + 2);
+                    assert_eq!(
+                        1 + text_w + padding + 1,
+                        cell_w,
+                        "cell {} drawn at the wrong width: {:?}",
+                        cell_w,
+                        fitted
+                    );
+                }
+            }
+        }
+    }
+
+    /// And across every width where an arrow can fit at all, it does.
+    #[test]
+    fn the_arrow_survives_at_every_width_that_can_hold_it() {
+        for cell_w in 5..24usize {
+            let fitted = fit_header("department", "", "", " ▲", cell_w);
+            assert!(
+                fitted.contains('▲'),
+                "width {} dropped the arrow: {:?}",
+                cell_w,
+                fitted
+            );
+        }
+    }
 }

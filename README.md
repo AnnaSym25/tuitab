@@ -44,8 +44,9 @@ cat data.csv | tuitab -t csv      # read from a pipe
 - **Vim-style navigation** — `hjkl`, `gg`/`G`, page jumps, sticky pinned columns.
 - **Instant analysis** — per-column statistics, frequency tables, and charts
   (histogram, bar, line, grouped bar) rendered right in the terminal.
-- **Reshape on the fly** — pivot tables, JOINs across files, transpose, computed
-  columns from an expression language.
+- **Reshape on the fly** — pivot tables, JOINs across files, transpose, group by,
+  deduplication, computed columns and window functions (rank, running total,
+  lag/lead, share of a group) from an expression language with `and` / `or` / `not`.
 - **Clean, fast, type-aware** — Polars-backed engine, Everforest theme, undo/redo,
   currency / percentage / date column types.
 - **Export and convert** — write back to CSV, TSV, Parquet, JSON, JSONL, YAML, TOML,
@@ -163,8 +164,10 @@ tuitab data.csv
 ```
 
 - Move with `h` `j` `k` `l`; jump with `gg` / `G`.
-- Sort the current column: `[` ascending, `]` descending, `r` to reset.
-- Chart it: `V`. Per-column stats: `I`. Frequency table: `F`.
+- Sort the current column: `[` ascending, `]` descending, `r` to reset;
+  `z[` / `z]` add a second key.
+- Chart it: `V`. Per-column stats: `I`. Frequency table: `F`. Group by pinned
+  columns: `gb`. Rank, running total or a group share: `zw`.
 - Select rows by an expression: `|!=amount > 1000`.
 - Add a column: `=` then e.g. `revenue / units`.
 - Save / export: `Ctrl+S`. Quit: `q`. Help at any time: `?`.
@@ -219,18 +222,24 @@ claude mcp add tuitab -- tuitab --mcp
 ```
 
 Four tools: `tuitab_inspect` (columns, types, row count, sample rows),
-`tuitab_query` (filter, sort, computed columns, group by, frequency, pivot,
-join — composed as a pipeline, with results returned as JSON or written to
+`tuitab_query` (fifteen operations composed as a pipeline — filter, group by,
+window functions, pivot, join, dedup and the rest — returning JSON or writing
 xlsx/csv/parquet), `tuitab_describe` (per-column statistics), and `tuitab_jq`
 (jq programs over nested JSON/YAML/TOML).
 
 There is no SQL and no arbitrary code: the model sends structured operations,
-each mapping onto a tuitab function, and gets back numbers Polars computed. The
-server documents itself — the tool list and usage notes are sent to the model on
-connect.
+each mapping onto a function tuitab already had, and gets back numbers Polars
+computed. The server documents itself — the tool list and usage notes are sent
+to the model on connect.
+
+Every operation is shared with a keybinding rather than written twice, and a test
+holds the two surfaces together: adding an action to the terminal fails to
+compile until someone says how a model reaches it.
 
 Costs no extra dependencies: the protocol is newline-delimited JSON-RPC, which
 `serde_json` already covers.
+
+Full details in the [MCP server guide](https://github.com/denisotree/tuitab/blob/master/docs/en/mcp.md).
 
 ---
 
@@ -275,6 +284,7 @@ Full guides, organised by topic, in two languages:
 | [Charts](https://github.com/denisotree/tuitab/blob/master/docs/en/charts.md) | [Графики](https://github.com/denisotree/tuitab/blob/master/docs/ru/charts.md) |
 | [JOIN](https://github.com/denisotree/tuitab/blob/master/docs/en/join.md) | [JOIN](https://github.com/denisotree/tuitab/blob/master/docs/ru/join.md) |
 | [Pivot tables](https://github.com/denisotree/tuitab/blob/master/docs/en/pivot.md) | [Сводные таблицы](https://github.com/denisotree/tuitab/blob/master/docs/ru/pivot.md) |
+| [MCP server](https://github.com/denisotree/tuitab/blob/master/docs/en/mcp.md) | [MCP-сервер](https://github.com/denisotree/tuitab/blob/master/docs/ru/mcp.md) |
 | [Recipes](https://github.com/denisotree/tuitab/blob/master/docs/en/recipes.md) | [Рецепты](https://github.com/denisotree/tuitab/blob/master/docs/ru/recipes.md) |
 
 ---

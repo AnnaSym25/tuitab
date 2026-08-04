@@ -2,6 +2,37 @@
 mod tests {
     use crate::data::io::format_file_size_pub;
 
+    /// Retyping a column must not leave an aggregator behind that the new type
+    /// cannot carry.
+    ///
+    /// `add_aggregator` refuses an incompatible pairing, so the only way the two
+    /// fall out of step is assigning first and retyping after. Every consumer —
+    /// the footer, `build_frequency_table`, `build_multi_frequency_table` —
+    /// then silently skips it, so the column keeps its marker while its value
+    /// quietly disappears.
+    #[test]
+    fn retyping_a_column_drops_aggregators_it_can_no_longer_carry() {
+        use crate::data::aggregator::AggregatorKind;
+        use crate::types::ColumnType;
+
+        let mut df =
+            crate::data::io::load_file(std::path::Path::new("test_data/sample.csv"), None).unwrap();
+        let salary = df.columns.iter().position(|c| c.name == "salary").unwrap();
+
+        df.add_aggregator(salary, AggregatorKind::Sum).unwrap();
+        df.add_aggregator(salary, AggregatorKind::Max).unwrap();
+        assert_eq!(df.columns[salary].aggregators.len(), 2);
+
+        df.set_column_type(salary, ColumnType::String).unwrap();
+
+        // Max survives — it works on any type; Sum does not.
+        assert_eq!(
+            df.columns[salary].aggregators,
+            vec![AggregatorKind::Max],
+            "sum cannot apply to a String column and must not linger"
+        );
+    }
+
     #[test]
     fn test_format_file_size() {
         assert_eq!(format_file_size_pub(0), "0 B");
@@ -47,6 +78,7 @@ mod tests {
             selected_rows: HashSet::new(),
             modified: false,
             aggregates_cache: None,
+            transposed: false,
         }
     }
 
@@ -203,6 +235,7 @@ mod tests {
             selected_rows: HashSet::new(),
             modified: false,
             aggregates_cache: None,
+            transposed: false,
         };
 
         let n = tdf.col_split(0, "/").unwrap();
@@ -267,6 +300,7 @@ mod tests {
             selected_rows: HashSet::new(),
             modified: false,
             aggregates_cache: None,
+            transposed: false,
         };
 
         let n = tdf.col_split(0, "/").unwrap();
@@ -316,6 +350,7 @@ mod tests {
             selected_rows: HashSet::new(),
             modified: false,
             aggregates_cache: None,
+            transposed: false,
         };
 
         assert_eq!(tdf.format_display(0, 0), "0 B");

@@ -24,6 +24,38 @@ pub struct DataFrame {
     /// Cached aggregate computations to avoid O(N) recalculation every frame
     #[serde(skip)]
     pub aggregates_cache: Option<Vec<Vec<(AggregatorKind, String)>>>,
+    /// True when this frame came out of [`crate::data::transpose::transpose_table`].
+    ///
+    /// Transposing twice has to give the original back rather than a table of a
+    /// table, so the second call needs to recognise the first one's output. It
+    /// used to guess — a pinned column named `column` — which ordinary data can
+    /// have and which `build_multi_frequency_table` sets on its own group
+    /// columns. A flag nothing but the transpose writes cannot be mistaken for
+    /// one.
+    #[serde(default)]
+    pub transposed: bool,
+}
+
+/// Build an ASCII block-character histogram bar for a frequency table cell.
+/// Uses Unicode block elements (▏▎▍▌▋▊▉█) for sub-character precision.
+pub fn build_bar(count: usize, max_count: usize, bar_width: usize) -> String {
+    if max_count == 0 {
+        return String::new();
+    }
+    const BLOCKS: [char; 9] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
+    let ratio = count as f64 / max_count as f64;
+    let total_eighths = (ratio * bar_width as f64 * 8.0).round() as usize;
+    let full_blocks = total_eighths / 8;
+    let remainder = total_eighths % 8;
+
+    let mut bar = String::with_capacity(bar_width + 1);
+    for _ in 0..full_blocks {
+        bar.push('▉'); // Using 7/8 block instead of full block creates a 1/8 gap to prevent visual merging
+    }
+    if full_blocks < bar_width && remainder > 0 {
+        bar.push(BLOCKS[remainder]);
+    }
+    bar
 }
 
 impl DataFrame {
@@ -37,7 +69,87 @@ impl DataFrame {
             selected_rows: HashSet::new(),
             modified: false,
             aggregates_cache: None,
+            transposed: false,
         }
+    }
+
+    /// Build a frame from a Polars frame and its column metadata, in load order.
+    ///
+    /// This is how every derived table is born — a frequency table, a pivot, a
+    /// transpose, a group-by, a describe.  It existed as eleven hand-written
+    /// copies of the same struct literal before, which is how the type
+    /// correction below came to be applied by exactly one of them.
+    ///
+    /// **The correction:** an aggregate column inherits its source column's
+    /// [`ColumnType`] through [`crate::data::aggregator::AggregatorKind::preserves_col_type`],
+    /// which is written for the TUI, where the average of an Integer column is
+    /// still formatted like that column.  As a *type*, though, it is a lie: the
+    /// mean of integers comes back fractional.  The frame knows better, so ask
+    /// it.
+    pub fn from_parts(pdf: polars::prelude::DataFrame, mut columns: Vec<ColumnMeta>) -> Self {
+        for (meta, column) in columns.iter_mut().zip(pdf.columns()) {
+            if meta.col_type == ColumnType::Integer
+                && matches!(column.dtype(), DataType::Float32 | DataType::Float64)
+            {
+                meta.col_type = ColumnType::Float;
+            }
+        }
+
+        let order: Vec<usize> = (0..pdf.height()).collect();
+        Self {
+            df: pdf,
+            columns,
+            row_order: Arc::new(order.clone()),
+            original_order: Arc::new(order),
+            selected_rows: HashSet::new(),
+            modified: false,
+            aggregates_cache: None,
+            transposed: false,
+        }
+    }
+
+    /// Index of a column by name, listing the available names when it is not
+    /// there — a caller that guessed wrong can fix it without a second look.
+    pub fn column_index(&self, name: &str) -> Result<usize, String> {
+        self.columns
+            .iter()
+            .position(|c| c.name == name)
+            .ok_or_else(|| {
+                let available: Vec<&str> = self.columns.iter().map(|c| c.name.as_str()).collect();
+                format!(
+                    "No column named '{}'. Available: {}",
+                    name,
+                    available.join(", ")
+                )
+            })
+    }
+
+    /// Keep only these columns, in this order.
+    ///
+    /// Row count is unchanged, so `row_order` stays valid — this is a
+    /// projection, not a filter.
+    pub fn select_columns(&self, names: &[String]) -> Result<Self, String> {
+        let mut metas = Vec::with_capacity(names.len());
+        for name in names {
+            metas.push(self.columns[self.column_index(name)?].clone());
+        }
+
+        let pdf = self
+            .df
+            .select(names.iter().map(|s| s.as_str()))
+            .map_err(|e| e.to_string())?;
+
+        // Through `from_parts` so the projection gets the same type
+        // reconciliation every other derived table does — otherwise a column is
+        // reported as one type before a projection and another after.
+        let mut out = Self::from_parts(pdf, metas);
+        out.row_order = self.row_order.clone();
+        out.original_order = self.original_order.clone();
+        out.selected_rows = self.selected_rows.clone();
+        out.modified = self.modified;
+        // A projection of a transposed table is still transposed.
+        out.transposed = self.transposed;
+        Ok(out)
     }
 
     /// Helper to reliably format AnyValue into String.
@@ -448,6 +560,17 @@ impl DataFrame {
         {
             self.columns[col_idx].precision = 2;
         }
+
+        // Drop aggregators the new type cannot carry.  `add_aggregator` refuses
+        // an incompatible one, so this is the only way the two can fall out of
+        // step — assign `sum` to a numeric column, then retype it to String.
+        // Without this the aggregator stays marked on the column while every
+        // consumer quietly skips it: an empty footer cell, and a frequency
+        // table missing a column the user asked for, with nothing said.
+        self.columns[col_idx]
+            .aggregators
+            .retain(|agg| agg.is_compatible(col_type));
+
         self.aggregates_cache = None;
         self.modified = true;
         Ok(())
@@ -1097,6 +1220,16 @@ impl DataFrame {
         expr: &crate::data::expression::Expr,
         insert_after_col: usize,
     ) -> Result<(), String> {
+        // Polars replaces a column of this name while the metadata below is
+        // inserted regardless, which leaves `columns` describing a table one
+        // wider than the frame actually is.
+        if self.column_index(name).is_ok() {
+            return Err(format!(
+                "a column named '{}' already exists — pick another name",
+                name
+            ));
+        }
+
         // Fast path: Try using Polars Lazy API
         if let Ok(polars_expr) = expr.to_polars_expr() {
             match self
@@ -1431,14 +1564,11 @@ impl DataFrame {
         let visible = self.get_visible_df()?;
 
         // ── Base agg: count per group ──────────────────────────────────────
-        let mut agg_exprs: Vec<Expr> = vec![col(&col_name).count().alias("Count")];
+        let mut agg_exprs: Vec<Expr> = vec![len().alias("Count")];
 
         // ── Per-column aggregators ─────────────────────────────────────────
         let mut extra_metas: Vec<crate::data::column::ColumnMeta> = Vec::new();
         for &(agg_col_idx, ref aggregators) in aggregated_cols {
-            if agg_col_idx == col_idx {
-                continue; // skip the grouping column itself
-            }
             let agg_col_name = self.columns[agg_col_idx].name.clone();
             let src_meta = &self.columns[agg_col_idx];
             for agg_kind in aggregators {
@@ -1464,11 +1594,13 @@ impl DataFrame {
         // ── Run group_by ───────────────────────────────────────────────────
         let grouped = visible
             .lazy()
-            .group_by([col(&col_name)])
+            .group_by_stable([crate::data::column_expr(&col_name)])
             .agg(agg_exprs)
             .sort(
                 ["Count"],
-                SortMultipleOptions::new().with_order_descending_multi([true]),
+                SortMultipleOptions::new()
+                    .with_order_descending_multi([true])
+                    .with_maintain_order(true),
             )
             .collect()
             .map_err(|e| format!("group_by error: {}", e))?;
@@ -1496,7 +1628,7 @@ impl DataFrame {
                 .and_then(|v| v.try_extract::<u64>().ok())
                 .unwrap_or(0) as usize;
             pct_values.push(c as f64 / total.max(1.0));
-            bar_values.push(crate::app::build_bar(c, max_count, BAR_WIDTH));
+            bar_values.push(build_bar(c, max_count, BAR_WIDTH));
         }
 
         // ── Assemble final DataFrame ───────────────────────────────────────
@@ -1562,7 +1694,9 @@ impl DataFrame {
 
         // Use first group column as the "count source" — count() on any col gives row count
         let count_source = group_names[0].clone();
-        let mut agg_exprs: Vec<Expr> = vec![col(&count_source).count().alias("Count")];
+        let mut agg_exprs: Vec<Expr> = vec![crate::data::column_expr(&count_source)
+            .count()
+            .alias("Count")];
 
         // ── Per-column aggregators ─────────────────────────────────────────
         let mut extra_metas: Vec<crate::data::column::ColumnMeta> = Vec::new();
@@ -1595,15 +1729,20 @@ impl DataFrame {
             }
         }
 
-        let group_exprs: Vec<Expr> = group_names.iter().map(col).collect();
+        let group_exprs: Vec<Expr> = group_names
+            .iter()
+            .map(|n| crate::data::column_expr(n))
+            .collect();
 
         let grouped = visible
             .lazy()
-            .group_by(group_exprs)
+            .group_by_stable(group_exprs)
             .agg(agg_exprs)
             .sort(
                 ["Count"],
-                SortMultipleOptions::new().with_order_descending_multi([true]),
+                SortMultipleOptions::new()
+                    .with_order_descending_multi([true])
+                    .with_maintain_order(true),
             )
             .collect()
             .map_err(|e| format!("multi group_by error: {}", e))?;
@@ -1631,7 +1770,7 @@ impl DataFrame {
                 .and_then(|v| v.try_extract::<u64>().ok())
                 .unwrap_or(0) as usize;
             pct_values.push(c as f64 / total.max(1.0));
-            bar_values.push(crate::app::build_bar(c, max_count, BAR_WIDTH));
+            bar_values.push(build_bar(c, max_count, BAR_WIDTH));
         }
 
         let mut final_df = grouped.clone();
@@ -1697,7 +1836,12 @@ impl DataFrame {
 
         let grouped = visible
             .lazy()
-            .group_by(group_by_cols.iter().map(col).collect::<Vec<_>>())
+            .group_by(
+                group_by_cols
+                    .iter()
+                    .map(|c| crate::data::column_expr(c))
+                    .collect::<Vec<_>>(),
+            )
             .agg([polars_formula.alias("pivot_value")])
             .collect()
             .map_err(|e| format!("Pivot grouping error: {}", e))?;

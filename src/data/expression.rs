@@ -70,6 +70,13 @@ pub enum Expr {
     },
     /// Membership test: `left in (v1, v2, ...)`.  Evaluates to a boolean.
     InList { left: Box<Expr>, list: Vec<Expr> },
+    /// Logical negation: `not cond`.
+    Not(Box<Expr>),
+    /// Whether a value is missing.
+    ///
+    /// Not expressible as `x == null`: in three-valued logic that comparison is
+    /// itself null, never true, so a filter built on it matches nothing.
+    IsNull(Box<Expr>),
 }
 
 /// Binary operator for [`Expr::BinOp`] nodes in the expression AST.
@@ -85,14 +92,23 @@ pub enum Op {
     Gt,
     Leq,
     Geq,
+    /// Logical conjunction — binds tighter than `Or`, looser than a comparison.
+    And,
+    /// Logical disjunction — the loosest binding of all.
+    Or,
 }
 
 // ── Parser ──────────────────────────────────────────────────────────────────────
-// Recursive descent parser.
+// Recursive descent parser, loosest binding first.
 // Grammar:
-//   expr     → term (('+' | '-') term)*
-//   term     → factor (('*' | '/') factor)*
-//   factor   → NUMBER | COLUMN_NAME | '(' expr ')'
+//   expr       → or
+//   or         → and ('or' and)*
+//   and        → not ('and' not)*
+//   not        → 'not' not | comparison
+//   comparison → term_add (('<'|'>'|'=='|'!='|'<='|'>=') term_add | 'in' '(' list ')')*
+//   term_add   → term_mul (('+' | '-') term_mul)*
+//   term_mul   → factor (('*' | '/') factor)*
+//   factor     → NUMBER | STRING | COLUMN_NAME | call | '(' expr ')'
 
 struct Parser {
     tokens: Vec<Token>,
@@ -118,6 +134,9 @@ enum Token {
     Leq,
     Geq,
     In,
+    And,
+    Or,
+    Not,
 }
 
 impl Expr {
@@ -139,8 +158,15 @@ impl Expr {
     /// Returns Err if the operation is not supported (triggers fallback execution).
     pub fn to_polars_expr(&self) -> Result<polars::lazy::dsl::Expr, String> {
         match self {
-            Expr::ColumnRef(name) => Ok(polars::lazy::dsl::col(name.as_str())),
+            Expr::ColumnRef(name) => Ok(crate::data::column_expr(name.as_str())),
             Expr::Literal(val) => match val {
+                // An integral value is emitted as an integer. JSON has a single
+                // number type, so an id arrives here as `f64`; comparing it
+                // against an Int64 column promotes the column to float, and
+                // above 2^53 neighbouring ids stop being distinguishable.
+                Value::Number(n) if n.fract() == 0.0 && n.abs() <= i64::MAX as f64 => {
+                    Ok(polars::lazy::dsl::lit(*n as i64))
+                }
                 Value::Number(n) => Ok(polars::lazy::dsl::lit(*n)),
                 Value::String(s) => Ok(polars::lazy::dsl::lit(s.clone())),
                 Value::Boolean(b) => Ok(polars::lazy::dsl::lit(*b)),
@@ -165,8 +191,12 @@ impl Expr {
                     Op::Gt => l.gt(r),
                     Op::Leq => l.lt_eq(r),
                     Op::Geq => l.gt_eq(r),
+                    Op::And => l.and(r),
+                    Op::Or => l.or(r),
                 })
             }
+            Expr::Not(inner) => Ok(inner.to_polars_expr()?.not()),
+            Expr::IsNull(inner) => Ok(inner.to_polars_expr()?.is_null()),
             Expr::InList { left, list } => {
                 let l = left.to_polars_expr()?;
                 let mut polars_list = Vec::new();
@@ -230,6 +260,23 @@ impl Expr {
                     .to_polars_expr()?
                     .min()
                     .cast(polars::prelude::DataType::Float64)),
+                // Casting to text so a value of any type can be compared with
+                // a string — polars refuses `numeric == ""` outright.
+                "text" if args.len() == 1 => Ok(args[0]
+                    .to_polars_expr()?
+                    .cast(polars::prelude::DataType::String)),
+                // The pattern has to be a literal: a per-row regex would mean
+                // recompiling it for every row, and no caller wants that.
+                "contains" if args.len() == 2 => match &args[1] {
+                    Expr::Literal(Value::String(pattern)) => Ok(args[0]
+                        .to_polars_expr()?
+                        .cast(polars::prelude::DataType::String)
+                        .str()
+                        .contains(polars::lazy::dsl::lit(pattern.clone()), true)),
+                    _ => {
+                        Err("contains() needs a literal pattern as its second argument".to_string())
+                    }
+                },
                 "year" | "month" | "day" | "hour" | "minute" | "today" | "now" | "date_format" => {
                     Err(format!("Function '{}' requires slow-path evaluation", name))
                 }
@@ -250,6 +297,13 @@ impl Expr {
     ) -> Value {
         match self {
             Expr::Literal(v) => v.clone(),
+            Expr::Not(inner) => match inner.eval(row_idx, col_lookup, df).as_bool() {
+                Some(b) => Value::Boolean(!b),
+                None => Value::Null,
+            },
+            Expr::IsNull(inner) => {
+                Value::Boolean(inner.eval(row_idx, col_lookup, df) == Value::Null)
+            }
             Expr::ColumnRef(name) => {
                 if let Some(&col_idx) = col_lookup.get(name.as_str()) {
                     let cell_text = df.get_physical(row_idx, col_idx);
@@ -348,6 +402,22 @@ impl Expr {
                     Op::Gt => return compare_ordered(&l, &r, std::cmp::Ordering::Greater, false),
                     Op::Leq => return compare_ordered(&l, &r, std::cmp::Ordering::Less, true),
                     Op::Geq => return compare_ordered(&l, &r, std::cmp::Ordering::Greater, true),
+                    // Only a genuine boolean counts. A non-boolean operand makes
+                    // the whole clause Null rather than quietly reading as false,
+                    // so `not (x and y)` cannot turn a broken comparison into a
+                    // confident answer.
+                    Op::And => {
+                        return match (l.as_bool(), r.as_bool()) {
+                            (Some(a), Some(b)) => Value::Boolean(a && b),
+                            _ => Value::Null,
+                        }
+                    }
+                    Op::Or => {
+                        return match (l.as_bool(), r.as_bool()) {
+                            (Some(a), Some(b)) => Value::Boolean(a || b),
+                            _ => Value::Null,
+                        }
+                    }
                     _ => {}
                 }
 
@@ -394,6 +464,18 @@ impl Expr {
                     .collect();
 
                 match name.as_str() {
+                    "text" if evaluated_args.len() == 1 => match &evaluated_args[0] {
+                        Value::Null => Value::Null,
+                        other => Value::String(other.to_string()),
+                    },
+                    "contains" if evaluated_args.len() == 2 => {
+                        match regex::Regex::new(&evaluated_args[1].to_string()) {
+                            Ok(re) => Value::Boolean(re.is_match(&evaluated_args[0].to_string())),
+                            // A malformed pattern is Null, not false — a bad
+                            // regex is not the same answer as "no match".
+                            Err(_) => Value::Null,
+                        }
+                    }
                     "concat" => {
                         let result: String = evaluated_args
                             .iter()
@@ -584,8 +666,47 @@ impl Parser {
         }
     }
 
-    /// expr → comparison
+    /// expr → or
     fn parse_expr(&mut self) -> Result<Expr, String> {
+        self.parse_or()
+    }
+
+    /// or → and ('or' and)*
+    fn parse_or(&mut self) -> Result<Expr, String> {
+        let mut left = self.parse_and()?;
+        while let Some(Token::Or) = self.peek() {
+            self.advance();
+            let right = self.parse_and()?;
+            left = Expr::BinOp {
+                op: Op::Or,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
+    }
+
+    /// and → not ('and' not)*
+    fn parse_and(&mut self) -> Result<Expr, String> {
+        let mut left = self.parse_not()?;
+        while let Some(Token::And) = self.peek() {
+            self.advance();
+            let right = self.parse_not()?;
+            left = Expr::BinOp {
+                op: Op::And,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
+    }
+
+    /// not → 'not' not | comparison
+    fn parse_not(&mut self) -> Result<Expr, String> {
+        if let Some(Token::Not) = self.peek() {
+            self.advance();
+            return Ok(Expr::Not(Box::new(self.parse_not()?)));
+        }
         self.parse_comparison()
     }
 
@@ -907,10 +1028,12 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                     i += 1;
                 }
                 let name: String = chars[start..i].iter().collect();
-                if name.to_lowercase() == "in" {
-                    tokens.push(Token::In);
-                } else {
-                    tokens.push(Token::Ident(name));
+                match name.to_lowercase().as_str() {
+                    "in" => tokens.push(Token::In),
+                    "and" => tokens.push(Token::And),
+                    "or" => tokens.push(Token::Or),
+                    "not" => tokens.push(Token::Not),
+                    _ => tokens.push(Token::Ident(name)),
                 }
             }
             c => {
@@ -1046,5 +1169,129 @@ mod tests {
         assert!(Expr::parse("(a+b").is_err());
         assert!(Expr::parse("a++b").is_err());
         assert!(Expr::parse("a = b").is_err()); // Ensure assignment fails nicely
+    }
+
+    // ── Boolean combination ────────────────────────────────────────────────
+
+    /// Read the boolean an expression evaluates to for one row of a frame,
+    /// through the Polars path rather than the interpreter.
+    fn polars_bool(expr: &str, df: &crate::data::dataframe::DataFrame, row: usize) -> Option<bool> {
+        // `polars::prelude::*` brings its own `Expr`, so name ours explicitly.
+        use polars::prelude::IntoLazy;
+        let parsed = super::Expr::parse(expr).expect("expression must parse");
+        let polars_expr = parsed.to_polars_expr().expect("must lower to Polars");
+        let out = df
+            .df
+            .clone()
+            .lazy()
+            .select([polars_expr.alias("m")])
+            .collect()
+            .expect("must evaluate");
+        out.column("m").unwrap().bool().unwrap().get(row)
+    }
+
+    fn sample() -> crate::data::dataframe::DataFrame {
+        crate::data::io::load_file(std::path::Path::new("test_data/sample.csv"), None).unwrap()
+    }
+
+    #[test]
+    fn and_or_not_parse_and_lower_to_polars() {
+        let df = sample();
+        // Row 0 is Alice Johnson, 30, Engineering.
+        assert_eq!(
+            polars_bool("department == \"Engineering\" and age > 25", &df, 0),
+            Some(true)
+        );
+        assert_eq!(
+            polars_bool("department == \"HR\" or age > 25", &df, 0),
+            Some(true)
+        );
+        assert_eq!(
+            polars_bool("not (department == \"Engineering\")", &df, 0),
+            Some(false)
+        );
+    }
+
+    /// `or` must bind looser than `and`, so `a and b or c` reads as
+    /// `(a and b) or c` — the conventional reading, and the one a user writing
+    /// a filter expects.
+    #[test]
+    fn or_binds_looser_than_and() {
+        let df = sample();
+        // Row 0: Engineering, 30. The `and` clause is false (age is not > 40),
+        // the trailing `or` clause is true. Under the wrong precedence —
+        // a and (b or c) — this would be true as well, so pick a case that
+        // separates them: false and false or true.
+        assert_eq!(
+            polars_bool(
+                "department == \"HR\" and age > 40 or department == \"Engineering\"",
+                &df,
+                0
+            ),
+            Some(true)
+        );
+        // a and (b or c) would give true here; (a and b) or c gives false.
+        assert_eq!(
+            polars_bool("department == \"HR\" and age > 40 or age > 100", &df, 0),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn contains_matches_a_regex_against_a_column() {
+        let df = sample();
+        assert_eq!(
+            polars_bool("contains(name, \"^Alice\")", &df, 0),
+            Some(true)
+        );
+        assert_eq!(polars_bool("contains(name, \"^Bob\")", &df, 0), Some(false));
+    }
+
+    /// The interpreter has to agree with the Polars path, since the TUI falls
+    /// back to it for expressions Polars cannot lower.
+    #[test]
+    fn the_interpreter_agrees_on_boolean_combination() {
+        let df = sample();
+        let lookup: std::collections::HashMap<&str, usize> = df
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.name.as_str(), i))
+            .collect();
+
+        for (source, expected) in [
+            ("department == \"Engineering\" and age > 25", true),
+            ("department == \"HR\" or age > 25", true),
+            ("not (department == \"Engineering\")", false),
+            ("department == \"HR\" and age > 40 or age > 100", false),
+            ("contains(name, \"^Alice\")", true),
+        ] {
+            let parsed = Expr::parse(source).expect(source);
+            assert_eq!(
+                parsed.eval(0, &lookup, &df).as_bool(),
+                Some(expected),
+                "interpreter disagrees on: {}",
+                source
+            );
+        }
+    }
+
+    /// A non-boolean operand yields Null rather than reading as false — so a
+    /// broken comparison cannot be negated into a confident answer.
+    #[test]
+    fn a_non_boolean_operand_makes_the_clause_null() {
+        let df = sample();
+        let lookup: std::collections::HashMap<&str, usize> = df
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (c.name.as_str(), i))
+            .collect();
+
+        let parsed = Expr::parse("age and department").unwrap();
+        assert_eq!(parsed.eval(0, &lookup, &df), Value::Null);
+
+        let negated = Expr::parse("not age").unwrap();
+        assert_eq!(negated.eval(0, &lookup, &df), Value::Null);
     }
 }

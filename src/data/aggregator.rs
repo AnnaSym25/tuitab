@@ -120,7 +120,7 @@ impl AggregatorKind {
 
     /// Map to Polars expression
     pub fn to_expr(self, col_name: &str) -> Option<polars::lazy::dsl::Expr> {
-        let c = polars::lazy::dsl::col(col_name);
+        let c = crate::data::column_expr(col_name);
         match self {
             Self::Count => Some(c.count()),
             Self::Distinct => Some(c.n_unique()),

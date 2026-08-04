@@ -46,6 +46,10 @@ pub enum AppMode {
     PivotTableInput,
     /// Showing the ? help overlay
     Help,
+    /// User is picking a window function (zw)
+    WindowFnSelect,
+    WindowDirSelect,
+    WindowOrderSelect,
     /// User is selecting columns for partitioning (zF)
     PartitionSelect,
     /// User is selecting aggregation function for a contextual chart
@@ -128,6 +132,27 @@ pub enum Action {
     GoBottom,
     SortAscending,
     SortDescending,
+    /// Group by the pinned columns, computing the aggregates marked with `+`
+    /// on the others (`gb`).
+    OpenGroupBy,
+    /// Open the window-function picker (`zw`).
+    OpenWindowFnSelect,
+    WindowFnSelectUp,
+    WindowFnSelectDown,
+    ApplyWindowFnSelect,
+    CancelWindowFnSelect,
+    WindowDirSelectUp,
+    WindowDirSelectDown,
+    ApplyWindowDirSelect,
+    CancelWindowDirSelect,
+    WindowOrderSelectUp,
+    WindowOrderSelectDown,
+    ApplyWindowOrderSelect,
+    CancelWindowOrderSelect,
+    /// Add the cursor column as a further, less significant sort key (`z[`).
+    AddSortKeyAscending,
+    /// Same, descending (`z]`).
+    AddSortKeyDescending,
     TransposeRow,
     TransposeTable,
     DescribeSheet,
@@ -565,6 +590,24 @@ impl ColumnType {
             Self::Currency,
             Self::FileSize,
         ]
+    }
+
+    /// The type's name in prose: lower case, no icon.
+    ///
+    /// [`Self::display_name`] prefixes an icon for the type-picker menu, which
+    /// makes it wrong for an error message or a JSON field.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::String => "string",
+            Self::Integer => "integer",
+            Self::Float => "float",
+            Self::Date => "date",
+            Self::Datetime => "datetime",
+            Self::Boolean => "boolean",
+            Self::Percentage => "percentage",
+            Self::Currency => "currency",
+            Self::FileSize => "filesize",
+        }
     }
 
     pub fn display_name(&self) -> &'static str {

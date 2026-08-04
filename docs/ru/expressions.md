@@ -46,11 +46,23 @@ salary > 90000
 department == "Engineering"
 status != "closed"
 region in ("North", "South")
+contains(name, "^A")
 ```
 
-> Операторов `and` / `or` / `contains` нет. Для поиска текста используйте `==`
-> для точного значения, `in (...)` для набора, `substring(...)` или
-> регулярное выражение через `|` / [найти и заменить](recipes.md).
+Условия объединяются через `and`, `or` и `not`. Слабее всех связывает `or`,
+затем `and`, затем `not` — то есть `a and b or c` читается как `(a and b) or c`.
+Если нужно иначе, ставьте скобки:
+
+```text
+department == "Engineering" and age > 40
+department == "HR" or department == "Marketing"
+not (status == "closed")
+(region == "North" or region == "South") and amount > 1000
+```
+
+> Операнд, не являющийся настоящим булевым значением, делает всё выражение
+> null, а не молча считается ложью — иначе сломанное сравнение можно было бы
+> отрицанием превратить в уверенный ответ.
 
 ## Функции
 

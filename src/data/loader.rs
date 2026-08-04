@@ -3,7 +3,6 @@ use crate::data::dataframe::DataFrame;
 use crate::types::ColumnType;
 use color_eyre::Result;
 use polars::prelude::*;
-use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 
@@ -23,7 +22,6 @@ pub fn load_csv(path: &Path, delimiter: Option<u8>) -> Result<DataFrame> {
     let pdf = lf.collect()?;
 
     let col_count = pdf.width();
-    let row_count = pdf.height();
 
     let mut columns = Vec::with_capacity(col_count);
 
@@ -50,18 +48,7 @@ pub fn load_csv(path: &Path, delimiter: Option<u8>) -> Result<DataFrame> {
         columns.push(col_meta);
     }
 
-    let row_order: Vec<usize> = (0..row_count).collect();
-    let original_order = row_order.clone();
-
-    let mut df = DataFrame {
-        df: pdf,
-        columns,
-        row_order: Arc::new(row_order),
-        original_order: Arc::new(original_order),
-        selected_rows: HashSet::new(),
-        modified: false,
-        aggregates_cache: None,
-    };
+    let mut df = DataFrame::from_parts(pdf, columns);
 
     df.calc_widths(40, 1000);
 

@@ -339,6 +339,40 @@ fn filter_predicates_combine_with_and() {
     assert_eq!(result["row_count"], 2);
 }
 
+/// An aggregate in `compute` must see only the rows that survived `filter`.
+///
+/// `add_computed_column` evaluates over the whole physical frame
+/// (`dataframe.rs:1101`), and `sum(x)` lowers to a broadcast over the entire
+/// column (`expression.rs:213`).  Unless a row-dropping operation materialises
+/// its result, a share-of-total lands on the wrong denominator — and looks
+/// perfectly reasonable while doing it.
+#[test]
+fn an_aggregate_after_filter_uses_only_the_surviving_rows() {
+    let mut server = Server::new();
+    let result = query(
+        &mut server,
+        json!([
+            {"filter": [{"col": "department", "op": "eq", "value": "Engineering"}]},
+            {"compute": {"name": "share", "expr": "salary / sum(salary)"}}
+        ]),
+    );
+
+    assert_eq!(result["row_count"], 7, "Engineering has seven people");
+
+    let shares: f64 = (0..7)
+        .map(|i| cell(&result, i, "share").as_f64().unwrap())
+        .sum();
+
+    // The seven Engineering salaries total 563001.50; the whole file totals
+    // 1624003.25.  Dividing by the latter would give 0.3467 — a number that
+    // reads like a plausible answer to a different question.
+    assert!(
+        (shares - 1.0).abs() < 1e-9,
+        "shares must total 1.0 within the filtered set, got {}",
+        shares
+    );
+}
+
 #[test]
 fn filter_supports_in_between_and_contains() {
     let mut server = Server::new();
@@ -363,6 +397,54 @@ fn filter_supports_in_between_and_contains() {
         json!([{"filter": [{"col": "name", "op": "contains", "value": "^A"}]}]),
     );
     assert_eq!(contains["row_count"], 1, "only Alice Johnson starts with A");
+}
+
+#[test]
+fn any_of_gives_the_filter_an_or() {
+    let mut server = Server::new();
+
+    let either = query(
+        &mut server,
+        json!([{"filter": [{"any_of": [
+            {"col": "department", "op": "eq", "value": "HR"},
+            {"col": "department", "op": "eq", "value": "Marketing"}
+        ]}]}]),
+    );
+    assert_eq!(either["row_count"], 8, "4 in HR and 4 in Marketing");
+
+    // A group beside a plain predicate reads as (A OR B) AND C.
+    let narrowed = query(
+        &mut server,
+        json!([{"filter": [
+            {"any_of": [{"col": "department", "op": "eq", "value": "HR"},
+                        {"col": "department", "op": "eq", "value": "Marketing"}]},
+            {"col": "age", "op": "gt", "value": 40}
+        ]}]),
+    );
+    assert_eq!(narrowed["row_count"], 1, "only Noah Martin, 44");
+}
+
+#[test]
+fn a_predicate_can_name_another_column_as_its_value() {
+    let mut server = Server::new();
+    let result = query(
+        &mut server,
+        json!([{"filter": [{"col": "salary", "op": "gt", "value": {"col": "age"}}]}]),
+    );
+    assert_eq!(result["row_count"], 20, "every salary exceeds its age");
+}
+
+/// A filter that legitimately matches nothing must return nothing, not fall
+/// through to a second evaluator with different semantics.
+#[test]
+fn a_filter_matching_nothing_returns_nothing() {
+    let mut server = Server::new();
+    let result = query(
+        &mut server,
+        json!([{"filter": [{"col": "department", "op": "eq", "value": "Legal"}]}]),
+    );
+    assert_eq!(result["row_count"], 0);
+    assert_eq!(result["returned"], 0);
 }
 
 #[test]
@@ -398,7 +480,63 @@ fn sort_orders_rows_and_composes_with_filter() {
     assert_eq!(cell(&result, 3, "age"), json!(25));
 }
 
+#[test]
+fn sort_takes_several_keys_at_once() {
+    let mut server = Server::new();
+    let result = query(
+        &mut server,
+        json!([{"sort": {"by": [{"col": "department"}, {"col": "age", "desc": true}]}}]),
+    );
+
+    // Engineering sorts first alphabetically, and holds ages 52, 42, 37, 34,
+    // 33, 30, 28 once ordered downwards.
+    for (i, age) in [52, 42, 37, 34, 33, 30, 28].iter().enumerate() {
+        assert_eq!(cell(&result, i, "department"), json!("Engineering"));
+        assert_eq!(cell(&result, i, "age"), json!(age));
+    }
+}
+
+/// A bare column name and the single-key object form both still work — a model
+/// asking one simple question should not have to write a list.
+#[test]
+fn sort_still_accepts_the_short_forms() {
+    let mut server = Server::new();
+
+    let object_form = query(&mut server, json!([{"sort": {"col": "age", "desc": true}}]));
+    assert_eq!(cell(&object_form, 0, "age"), json!(52));
+
+    let bare_name = query(&mut server, json!([{"sort": {"by": "age"}}]));
+    assert_eq!(cell(&bare_name, 0, "age"), json!(25));
+}
+
 // ── aggregation ─────────────────────────────────────────────────────────────
+
+#[test]
+fn aggregate_answers_a_grand_total() {
+    let mut server = Server::new();
+    let result = query(
+        &mut server,
+        json!([{"aggregate": [{"col": "salary", "fn": "sum"},
+                              {"col": "*", "fn": "count"}]}]),
+    );
+
+    assert_eq!(result["row_count"], 1, "a total is a single row");
+    assert_eq!(cell(&result, 0, "salary:sum"), json!(1_624_003.25));
+    assert_eq!(cell(&result, 0, "count"), json!(20));
+}
+
+#[test]
+fn aggregate_totals_only_what_survived_the_filter() {
+    let mut server = Server::new();
+    let result = query(
+        &mut server,
+        json!([
+            {"filter": [{"col": "department", "op": "eq", "value": "Engineering"}]},
+            {"aggregate": [{"col": "salary", "fn": "sum"}]}
+        ]),
+    );
+    assert_eq!(cell(&result, 0, "salary:sum"), json!(563_001.5));
+}
 
 #[test]
 fn group_by_returns_exactly_the_requested_aggregates() {
@@ -741,4 +879,32 @@ fn the_binary_speaks_the_protocol_over_stdio() {
         })
         .collect();
     assert_eq!(ids, vec![1, 2, 3]);
+}
+
+/// An unseeded random operation must report the seed it drew, or its result is
+/// one nobody — including the model quoting it — can reproduce.
+#[test]
+fn an_unseeded_sample_reports_the_seed_it_used() {
+    let mut server = Server::new();
+    let first = query(&mut server, json!([{"sample": {"n": 5}}]));
+
+    let seeds = first["seeds"]
+        .as_array()
+        .expect("the drawn seed must come back");
+    assert_eq!(seeds.len(), 1);
+    let seed = seeds[0]["seed"].as_u64().unwrap();
+
+    // Feeding it back reproduces the same rows.
+    let repeated = query(&mut server, json!([{"sample": {"n": 5, "seed": seed}}]));
+    assert_eq!(first["rows"], repeated["rows"]);
+}
+
+#[test]
+fn a_seeded_operation_reports_no_seed_because_none_was_drawn() {
+    let mut server = Server::new();
+    let result = query(&mut server, json!([{"sample": {"n": 5, "seed": 3}}]));
+    assert!(
+        result.get("seeds").is_none(),
+        "nothing was drawn for the caller"
+    );
 }

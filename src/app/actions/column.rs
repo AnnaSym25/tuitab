@@ -222,8 +222,18 @@ impl App {
                 self.create_pct_column();
                 None
             }
+            Action::OpenPartitionSelect if self.stack.active().doc.is_some() => {
+                self.reject_on_doc_sheet("Adding a partitioned % column");
+                None
+            }
             Action::OpenPartitionSelect => {
                 self.open_partition_select();
+                None
+            }
+            Action::OpenWindowFnSelect if self.stack.active().doc.is_some() => {
+                // A doc sheet's table mirrors its document; an extra column
+                // breaks that correspondence for the rest of the session.
+                self.reject_on_doc_sheet("Adding a window column");
                 None
             }
             Action::ApplyPartitionedPct => {
@@ -256,6 +266,10 @@ impl App {
                 None
             }
             Action::CancelPartitionSelect => {
+                // The picker may have been opened by `zw`, which arms a
+                // function for it. Leaving that armed makes the next `zF`
+                // compute something the user never asked for.
+                self.pending_window_fn = None;
                 self.mode = AppMode::Normal;
                 self.status_message.clear();
                 None

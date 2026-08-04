@@ -434,7 +434,7 @@ impl App {
                 s.cursor_col = col.min(ncols.saturating_sub(1));
                 s.table_state.select_column(Some(s.cursor_col));
                 // A sort on a column that may no longer exist cannot be kept.
-                s.sort_col = None;
+                s.sort_keys.clear();
                 s.left_col = s.left_col.min(s.cursor_col);
                 self.status_message = format!("{} columns", ncols);
             }

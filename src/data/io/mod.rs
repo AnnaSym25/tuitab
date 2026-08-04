@@ -3,7 +3,6 @@ use crate::data::dataframe::DataFrame;
 use crate::types::ColumnType;
 use color_eyre::{eyre::eyre, Result};
 use polars::prelude::*;
-use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
 
@@ -188,7 +187,6 @@ pub fn load_from_stdin_with_doc(
 
 pub(crate) fn wrap_polars_df(pdf: polars::prelude::DataFrame) -> Result<DataFrame> {
     let col_count = pdf.width();
-    let row_count = pdf.height();
     let mut columns = Vec::with_capacity(col_count);
 
     for series in pdf.columns() {
@@ -213,18 +211,7 @@ pub(crate) fn wrap_polars_df(pdf: polars::prelude::DataFrame) -> Result<DataFram
         columns.push(col_meta);
     }
 
-    let row_order: Vec<usize> = (0..row_count).collect();
-    let original_order = row_order.clone();
-
-    let mut df = DataFrame {
-        df: pdf,
-        columns,
-        row_order: std::sync::Arc::new(row_order),
-        original_order: std::sync::Arc::new(original_order),
-        selected_rows: HashSet::new(),
-        modified: false,
-        aggregates_cache: None,
-    };
+    let mut df = DataFrame::from_parts(pdf, columns);
     df.calc_widths(40, 1000);
     Ok(df)
 }

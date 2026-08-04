@@ -6,39 +6,40 @@
 //!
 //! # How operations compose
 //!
-//! A [`DataFrame`] keeps `row_order`, a display-order permutation over the
-//! physical rows, and every reshaping function in `crate::data` reads its input
-//! through [`DataFrame::get_visible_df`].  That gives the composition rule:
+//! **Every operation returns a materialised frame** whose `row_order` is the
+//! identity.  One rule, no exceptions.
 //!
-//! * `filter`, `limit` and `sort` rewrite `row_order` and move no data;
-//! * `select` and `compute` change columns and leave `row_order` alone;
-//! * `group_by`, `frequency`, `pivot` and `join` read through `get_visible_df`
-//!   and return a fresh frame whose `row_order` is the identity.
+//! The cheap-looking alternative is to let row-affecting operations rewrite
+//! `row_order` and leave the frame alone — a permutation instead of a copy.
+//! That is what this module used to do, and it was wrong twice over:
 //!
-//! So `filter` then `group_by` aggregates only the surviving rows, and `filter`
-//! then `sort` sorts only them — without any operation having to materialise a
-//! copy just to hand it to the next one.
+//! * [`DataFrame::add_computed_column`] evaluates over the whole physical
+//!   frame, so `sum(x)` in a `compute` after a `filter` divided by the total of
+//!   every row in the file, dropped ones included. A share-of-total came back
+//!   confidently wrong.
+//! * Window functions read the frame in physical order, so a `sort` that only
+//!   permuted `row_order` left a running total accumulating in load order.
+//!
+//! Both are the same mistake: a downstream operation reaching past the view to
+//! the data underneath. An invariant with an exception is one an author has to
+//! remember; this one costs a `take()` per operation and nothing to remember.
 
 use crate::data::aggregator::AggregatorKind;
-use crate::data::column::ColumnMeta;
 use crate::data::dataframe::DataFrame;
-use crate::data::expression::Expr as TuiExpr;
+use crate::data::expression::{Expr as TuiExpr, Value as ExprValue};
+use crate::data::filter::{Clause, Operand, PredOp, Predicate};
+use crate::data::group::AggSpec;
 use crate::data::join::{join_dataframes, JoinType};
-use crate::types::ColumnType;
-use polars::prelude::*;
 use serde_json::Value;
-use std::collections::HashSet;
 use std::sync::Arc;
 
 // ── Operation model ─────────────────────────────────────────────────────────
 
 pub enum Op {
-    Filter(Vec<Predicate>),
+    Filter(Vec<Clause>),
     Select(Vec<String>),
-    Sort {
-        col: String,
-        desc: bool,
-    },
+    /// One or more sort keys, the first most significant.
+    Sort(Vec<SortKey>),
     Compute {
         name: String,
         expr: String,
@@ -56,13 +57,40 @@ pub enum Op {
         on: String,
         formula: String,
     },
+    /// Aggregate every visible row as one group — a grand total.
+    Aggregate(Vec<AggSpec>),
+    /// Keep one row per distinct combination of `by`.
+    Dedup {
+        by: Vec<String>,
+        keep: String,
+        /// Tiebreaker column for `min` / `max`.
+        on: Option<String>,
+        /// Seed for `random`, so the same answer can be had twice.
+        seed: Option<u64>,
+    },
+    /// Keep only rows whose `by` values appear more than once.
+    Duplicates {
+        by: Vec<String>,
+    },
+    /// Add a column computed from the rows around each row.
+    Window(crate::data::window::Spec),
+    /// Keep `n` rows chosen at random.
+    Sample {
+        n: usize,
+        seed: Option<u64>,
+    },
+    /// Stand the table on end, or one row of it.
+    Transpose {
+        /// A display row to transpose on its own; the whole table when absent.
+        row: Option<usize>,
+    },
     Join(JoinSpec),
     Limit(usize),
 }
 
-pub struct AggSpec {
+pub struct SortKey {
     pub col: String,
-    pub kind: AggregatorKind,
+    pub desc: bool,
 }
 
 pub struct JoinSpec {
@@ -70,54 +98,6 @@ pub struct JoinSpec {
     pub left_on: Vec<String>,
     pub right_on: Vec<String>,
     pub how: JoinType,
-}
-
-pub struct Predicate {
-    pub col: String,
-    pub op: PredOp,
-    pub value: Value,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum PredOp {
-    Eq,
-    Ne,
-    Gt,
-    Ge,
-    Lt,
-    Le,
-    In,
-    NotIn,
-    Contains,
-    Between,
-    IsEmpty,
-    NotEmpty,
-}
-
-impl PredOp {
-    fn parse(s: &str) -> Result<Self, String> {
-        Ok(match s {
-            "eq" => Self::Eq,
-            "ne" => Self::Ne,
-            "gt" => Self::Gt,
-            "ge" => Self::Ge,
-            "lt" => Self::Lt,
-            "le" => Self::Le,
-            "in" => Self::In,
-            "not_in" => Self::NotIn,
-            "contains" => Self::Contains,
-            "between" => Self::Between,
-            "is_empty" => Self::IsEmpty,
-            "not_empty" => Self::NotEmpty,
-            other => {
-                return Err(format!(
-                    "Unknown filter operator '{}'. Available: eq, ne, gt, ge, lt, le, \
-                     in, not_in, contains, between, is_empty, not_empty",
-                    other
-                ))
-            }
-        })
-    }
 }
 
 // ── Parsing ─────────────────────────────────────────────────────────────────
@@ -153,10 +133,7 @@ fn parse_op(value: &Value) -> Result<Op, String> {
     match name.as_str() {
         "filter" => Ok(Op::Filter(parse_predicates(body)?)),
         "select" => Ok(Op::Select(string_array(body, "select")?)),
-        "sort" => Ok(Op::Sort {
-            col: required_str(body, "col")?,
-            desc: body.get("desc").and_then(Value::as_bool).unwrap_or(false),
-        }),
+        "sort" => Ok(Op::Sort(parse_sort_keys(body)?)),
         "compute" => Ok(Op::Compute {
             name: required_str(body, "name")?,
             expr: required_str(body, "expr")?,
@@ -174,6 +151,49 @@ fn parse_op(value: &Value) -> Result<Op, String> {
             on: required_str(body, "on")?,
             formula: required_str(body, "formula")?,
         }),
+        "aggregate" => Ok(Op::Aggregate(parse_aggs(Some(body))?)),
+        "dedup" => Ok(Op::Dedup {
+            by: string_array(body.get("by").unwrap_or(&Value::Null), "by")?,
+            keep: body
+                .get("keep")
+                .and_then(Value::as_str)
+                .unwrap_or("first")
+                .to_string(),
+            on: body.get("on").and_then(Value::as_str).map(str::to_string),
+            seed: body.get("seed").and_then(Value::as_u64),
+        }),
+        "duplicates" => Ok(Op::Duplicates {
+            by: match body.get("by") {
+                Some(v) if !v.is_null() => string_array(v, "by")?,
+                _ => Vec::new(),
+            },
+        }),
+        "window" => Ok(Op::Window(crate::data::window::Spec {
+            function: crate::data::window::WindowFn::parse(&required_str(body, "fn")?)?,
+            col: body.get("col").and_then(Value::as_str).map(str::to_string),
+            over: match body.get("over") {
+                Some(v) if !v.is_null() => string_array(v, "over")?,
+                _ => Vec::new(),
+            },
+            order_by: match body.get("order_by") {
+                Some(v) if !v.is_null() => string_array(v, "order_by")?,
+                _ => Vec::new(),
+            },
+            as_name: body.get("as").and_then(Value::as_str).map(str::to_string),
+            desc: body.get("desc").and_then(Value::as_bool).unwrap_or(false),
+            offset: body.get("offset").and_then(Value::as_i64).unwrap_or(1),
+        })),
+        "sample" => Ok(Op::Sample {
+            n: body
+                .get("n")
+                .and_then(Value::as_u64)
+                .map(|n| n as usize)
+                .ok_or("'sample' needs 'n', how many rows to keep")?,
+            seed: body.get("seed").and_then(Value::as_u64),
+        }),
+        "transpose" => Ok(Op::Transpose {
+            row: body.get("row").and_then(Value::as_u64).map(|n| n as usize),
+        }),
         "join" => Ok(Op::Join(parse_join(body)?)),
         "limit" => body
             .as_u64()
@@ -182,9 +202,39 @@ fn parse_op(value: &Value) -> Result<Op, String> {
             .ok_or_else(|| "'limit' takes a number".to_string()),
         other => Err(format!(
             "Unknown operation '{}'. Available: filter, select, sort, compute, \
-             group_by, frequency, pivot, join, limit",
+             group_by, aggregate, frequency, pivot, join, dedup, duplicates, \
+             sample, window, transpose, limit",
             other
         )),
+    }
+}
+
+/// Read sort keys from either shape.
+///
+/// `{"col": "amount", "desc": true}` is the common single-key case and stays;
+/// `{"by": [{"col": ..., "desc": ...}, ...]}` gives a compound sort. Two `sort`
+/// operations in sequence are *not* an equivalent of the latter — see
+/// [`DataFrame::sort_by_keys`].
+fn parse_sort_keys(body: &Value) -> Result<Vec<SortKey>, String> {
+    let read = |item: &Value| -> Result<SortKey, String> {
+        // A bare column name is accepted for the ascending case.
+        if let Some(col) = item.as_str() {
+            return Ok(SortKey {
+                col: col.to_string(),
+                desc: false,
+            });
+        }
+        Ok(SortKey {
+            col: required_str(item, "col")?,
+            desc: item.get("desc").and_then(Value::as_bool).unwrap_or(false),
+        })
+    };
+
+    match body.get("by") {
+        Some(Value::Array(items)) if !items.is_empty() => items.iter().map(read).collect(),
+        Some(Value::Array(_)) => Err("'by' needs at least one sort key".to_string()),
+        Some(other) => read(other).map(|k| vec![k]),
+        None => read(body).map(|k| vec![k]),
     }
 }
 
@@ -213,7 +263,55 @@ fn string_array(value: &Value, what: &str) -> Result<Vec<String>, String> {
         .collect()
 }
 
-fn parse_predicates(value: &Value) -> Result<Vec<Predicate>, String> {
+/// Translate a JSON value into the operand a predicate compares against.
+///
+/// `{"col": "cost"}` names another column, so `revenue > cost` is expressible
+/// without first computing a difference. Anything else is a constant.
+fn parse_operand(value: &Value, op: PredOp) -> Result<Operand, String> {
+    if let Some(name) = value.get("col").and_then(Value::as_str) {
+        return Ok(Operand::Column(name.to_string()));
+    }
+
+    let scalar = |v: &Value| -> Result<ExprValue, String> {
+        Ok(match v {
+            Value::Number(n) => ExprValue::Number(n.as_f64().unwrap_or(f64::NAN)),
+            Value::String(s) => ExprValue::String(s.clone()),
+            Value::Bool(b) => ExprValue::Boolean(*b),
+            Value::Null => ExprValue::Null,
+            other => return Err(format!("cannot compare against {}", other)),
+        })
+    };
+
+    // `in`, `not_in` and `between` want a list; everything else a single value.
+    if matches!(op, PredOp::In | PredOp::NotIn | PredOp::Between) {
+        let items = value
+            .as_array()
+            .ok_or_else(|| format!("'{:?}' takes an array of values", op).to_lowercase())?;
+        return items
+            .iter()
+            .map(scalar)
+            .collect::<Result<_, _>>()
+            .map(Operand::List);
+    }
+
+    scalar(value).map(Operand::Literal)
+}
+
+fn parse_predicate(item: &Value) -> Result<Predicate, String> {
+    let op = PredOp::parse(&required_str(item, "op")?)?;
+    Ok(Predicate {
+        col: required_str(item, "col")?,
+        op,
+        value: parse_operand(item.get("value").unwrap_or(&Value::Null), op)?,
+    })
+}
+
+/// Parse a filter: a list whose entries are predicates or `any_of` groups.
+///
+/// Entries are joined with AND, predicates inside an `any_of` with OR — one
+/// level of nesting, which covers `(a OR b) AND c` and stops short of being a
+/// query language.
+fn parse_predicates(value: &Value) -> Result<Vec<Clause>, String> {
     // A lone predicate object is accepted as a one-element list.
     let items: Vec<&Value> = match value {
         Value::Array(a) => a.iter().collect(),
@@ -223,12 +321,14 @@ fn parse_predicates(value: &Value) -> Result<Vec<Predicate>, String> {
 
     items
         .into_iter()
-        .map(|item| {
-            Ok(Predicate {
-                col: required_str(item, "col")?,
-                op: PredOp::parse(&required_str(item, "op")?)?,
-                value: item.get("value").cloned().unwrap_or(Value::Null),
-            })
+        .map(|item| match item.get("any_of") {
+            Some(Value::Array(group)) => group
+                .iter()
+                .map(parse_predicate)
+                .collect::<Result<Vec<_>, _>>()
+                .map(Clause::AnyOf),
+            Some(_) => Err("'any_of' takes an array of predicates".to_string()),
+            None => parse_predicate(item).map(Clause::One),
         })
         .collect()
 }
@@ -311,34 +411,60 @@ fn parse_join(body: &Value) -> Result<JoinSpec, String> {
 
 // ── Application ─────────────────────────────────────────────────────────────
 
-pub fn apply_all(mut df: DataFrame, ops: &[Op]) -> Result<DataFrame, String> {
-    for (i, op) in ops.iter().enumerate() {
-        df = apply(df, op).map_err(|e| format!("ops[{}]: {}", i, e))?;
-    }
-    Ok(df)
+/// Seeds drawn for operations the caller left unseeded.
+///
+/// Reported back so a random result can be had again — a sample nobody can
+/// reproduce is a poor thing to quote at someone.
+#[derive(Default)]
+pub struct Seeds(pub Vec<(usize, u64)>);
+
+pub fn apply_all(df: DataFrame, ops: &[Op]) -> Result<DataFrame, String> {
+    apply_all_reporting_seeds(df, ops).map(|(df, _)| df)
 }
 
-fn apply(mut df: DataFrame, op: &Op) -> Result<DataFrame, String> {
+pub fn apply_all_reporting_seeds(
+    mut df: DataFrame,
+    ops: &[Op],
+) -> Result<(DataFrame, Seeds), String> {
+    let mut seeds = Seeds::default();
+    for (i, op) in ops.iter().enumerate() {
+        // Draw here rather than inside `apply`, so the value can be reported.
+        let drawn = match op {
+            Op::Sample { seed: None, .. } => Some(crate::data::dedup::random_seed()),
+            Op::Dedup {
+                keep, seed: None, ..
+            } if keep == "random" => Some(crate::data::dedup::random_seed()),
+            _ => None,
+        };
+        if let Some(seed) = drawn {
+            seeds.0.push((i, seed));
+        }
+        df = apply(df, op, drawn).map_err(|e| format!("ops[{}]: {}", i, e))?;
+    }
+    Ok((df, seeds))
+}
+
+fn apply(mut df: DataFrame, op: &Op, drawn_seed: Option<u64>) -> Result<DataFrame, String> {
     match op {
-        Op::Filter(predicates) => {
-            let keep = matching_rows(&df, predicates)?;
-            df.row_order = Arc::new(keep);
-            df.aggregates_cache = None;
-            Ok(df)
+        Op::Filter(clauses) => {
+            df.row_order = Arc::new(crate::data::filter::matching_rows(&df, clauses)?);
+            materialize(df)
         }
         Op::Limit(n) => {
             let mut order = (*df.row_order).clone();
             order.truncate(*n);
             df.row_order = Arc::new(order);
-            df.aggregates_cache = None;
-            Ok(df)
+            materialize(df)
         }
-        Op::Sort { col, desc } => {
-            let idx = column_index(&df, col)?;
-            df.sort_by(idx, *desc);
-            Ok(df)
+        Op::Sort(keys) => {
+            let resolved: Vec<(usize, bool)> = keys
+                .iter()
+                .map(|k| df.column_index(&k.col).map(|i| (i, k.desc)))
+                .collect::<Result<_, _>>()?;
+            df.sort_by_keys(&resolved)?;
+            materialize(df)
         }
-        Op::Select(names) => select(df, names),
+        Op::Select(names) => df.select_columns(names),
         Op::Compute { name, expr } => {
             let parsed =
                 TuiExpr::parse(expr).map_err(|e| format!("in expression '{}': {}", expr, e))?;
@@ -346,8 +472,56 @@ fn apply(mut df: DataFrame, op: &Op) -> Result<DataFrame, String> {
             df.add_computed_column(name, &parsed, last)?;
             Ok(df)
         }
-        Op::GroupBy { by, agg } => group_by(&df, by, agg),
-        Op::Frequency { by, agg } => frequency(&df, by, agg),
+        Op::GroupBy { by, agg } => crate::data::group::group_by(&df, by, agg),
+        Op::Aggregate(agg) => crate::data::group::total(&df, agg),
+        Op::Dedup { by, keep, on, seed } => {
+            let keys: Vec<usize> = by
+                .iter()
+                .map(|n| df.column_index(n))
+                .collect::<Result<_, _>>()?;
+            let tiebreaker = on.as_deref().map(|n| df.column_index(n)).transpose()?;
+            let rule = crate::data::dedup::Keep::parse(keep, seed.or(drawn_seed), tiebreaker)?;
+            df.row_order = Arc::new(crate::data::dedup::deduplicate(&df, &keys, rule)?);
+            materialize(df)
+        }
+        Op::Duplicates { by } => {
+            let keys: Vec<usize> = by
+                .iter()
+                .map(|n| df.column_index(n))
+                .collect::<Result<_, _>>()?;
+            let duplicates: std::collections::HashSet<usize> =
+                crate::data::dedup::duplicate_rows(&df, &keys)
+                    .into_iter()
+                    .collect();
+            let kept: Vec<usize> = df
+                .row_order
+                .iter()
+                .copied()
+                .filter(|r| duplicates.contains(r))
+                .collect();
+            df.row_order = Arc::new(kept);
+            materialize(df)
+        }
+        Op::Window(spec) => crate::data::window::add_window_column(&df, spec),
+        Op::Sample { n, seed } => {
+            let seed = seed.or(drawn_seed).unwrap_or(0);
+            df.row_order = Arc::new(crate::data::dedup::sample_rows(&df, *n, seed));
+            materialize(df)
+        }
+        Op::Transpose { row } => match row {
+            Some(display) => {
+                let physical = df.row_order.get(*display).copied().ok_or_else(|| {
+                    format!(
+                        "row {} is out of range; {} rows are visible",
+                        display,
+                        df.row_order.len()
+                    )
+                })?;
+                crate::data::transpose::transpose_row(&df, physical)
+            }
+            None => crate::data::transpose::transpose_table(&df),
+        },
+        Op::Frequency { by, agg } => crate::data::group::frequency(&df, by, agg),
         Op::Pivot { index, on, formula } => pivot(&df, index, on, formula),
         Op::Join(spec) => {
             let right = super::source::load_once(&spec.source)?;
@@ -357,387 +531,15 @@ fn apply(mut df: DataFrame, op: &Op) -> Result<DataFrame, String> {
     }
 }
 
-/// Index of a column by name, with the available names in the error — a model
-/// that guessed wrong can fix it without another round trip.
-fn column_index(df: &DataFrame, name: &str) -> Result<usize, String> {
-    df.columns
-        .iter()
-        .position(|c| c.name == name)
-        .ok_or_else(|| {
-            let available: Vec<&str> = df.columns.iter().map(|c| c.name.as_str()).collect();
-            format!(
-                "No column named '{}'. Available: {}",
-                name,
-                available.join(", ")
-            )
-        })
-}
-
-/// Build a `DataFrame` from a Polars frame plus column metadata, the way the
-/// TUI does when it opens a derived sheet.
-fn from_parts(pdf: polars::prelude::DataFrame, mut columns: Vec<ColumnMeta>) -> DataFrame {
-    // An aggregate column inherits the source column's type — `preserves_col_type`
-    // is written for the TUI, where the average of an Integer column is still
-    // shown with that column's formatting.  Reported to a model, that label is a
-    // lie: avg over integers comes back fractional.  The frame knows better.
-    for (meta, column) in columns.iter_mut().zip(pdf.columns()) {
-        if meta.col_type == ColumnType::Integer
-            && matches!(column.dtype(), DataType::Float32 | DataType::Float64)
-        {
-            meta.col_type = ColumnType::Float;
-        }
-    }
-
-    let order: Vec<usize> = (0..pdf.height()).collect();
-    DataFrame {
-        df: pdf,
-        columns,
-        row_order: Arc::new(order.clone()),
-        original_order: Arc::new(order),
-        selected_rows: HashSet::new(),
-        modified: false,
-        aggregates_cache: None,
-    }
-}
-
-// ── filter ──────────────────────────────────────────────────────────────────
-
-/// Display-row indices surviving every predicate.
+/// Collapse `row_order` into the frame, so the next operation sees the rows it
+/// is supposed to see, in the order it is supposed to see them.
 ///
-// ponytail: predicates are joined with AND only. For OR, add an `any_of` key
-// alongside `filter` rather than extending crate::data::expression::Expr — its
-// Op enum (expression.rs:77) has no And/Or/Not by design.
-fn matching_rows(df: &DataFrame, predicates: &[Predicate]) -> Result<Vec<usize>, String> {
-    if predicates.is_empty() {
-        return Ok((*df.row_order).clone());
-    }
-
+/// Cheap when nothing changed: [`DataFrame::get_visible_df`] returns a clone of
+/// the frame — Arc-backed, so O(columns) — whenever `row_order` is already the
+/// identity.
+fn materialize(df: DataFrame) -> Result<DataFrame, String> {
     let visible = df.get_visible_df()?;
-    let mut keep = vec![true; visible.height()];
-
-    // `contains` runs through DataFrame::find_matching_rows rather than the lazy
-    // expression namespace: the lazy `str().contains` needs polars' `regex`
-    // feature, which this build does not enable, and find_matching_rows is the
-    // same regex over the same rows with tests already on it.
-    let mut lazy: Option<Expr> = None;
-    for predicate in predicates {
-        let idx = column_index(df, &predicate.col)?;
-
-        if predicate.op == PredOp::Contains {
-            let pattern = predicate
-                .value
-                .as_str()
-                .ok_or_else(|| "'contains' takes a regex string".to_string())?;
-            let mut hit = vec![false; visible.height()];
-            for i in df.find_matching_rows(idx, pattern) {
-                if i < hit.len() {
-                    hit[i] = true;
-                }
-            }
-            for (k, h) in keep.iter_mut().zip(hit) {
-                *k &= h;
-            }
-            continue;
-        }
-
-        let dtype = visible
-            .column(&predicate.col)
-            .map_err(|e| e.to_string())?
-            .dtype()
-            .clone();
-        let expr = predicate_expr(&dtype, predicate)?;
-        lazy = Some(match lazy {
-            Some(acc) => acc.and(expr),
-            None => expr,
-        });
-    }
-
-    if let Some(expr) = lazy {
-        let mask_df = visible
-            .lazy()
-            .select([expr.alias("__keep")])
-            .collect()
-            .map_err(|e| format!("filter failed: {}", e))?;
-
-        let mask = mask_df
-            .column("__keep")
-            .map_err(|e| e.to_string())?
-            .as_materialized_series()
-            .bool()
-            .map_err(|e| format!("filter did not produce a boolean: {}", e))?
-            .clone();
-
-        for (k, hit) in keep.iter_mut().zip(&mask) {
-            *k &= hit.unwrap_or(false);
-        }
-    }
-
-    Ok(keep
-        .into_iter()
-        .enumerate()
-        .filter(|(_, k)| *k)
-        .map(|(i, _)| df.row_order[i])
-        .collect())
-}
-
-/// Whether a comparison against this dtype should happen on the text form.
-///
-/// Dates and datetimes compare as ISO-8601 text, where lexicographic order is
-/// chronological order — cheaper than parsing the literal into a temporal type
-/// and correct for the formats tuitab produces.
-fn compares_as_text(dtype: &DataType) -> bool {
-    matches!(
-        dtype,
-        DataType::String | DataType::Date | DataType::Datetime(_, _) | DataType::Time
-    )
-}
-
-fn scalar_literal(dtype: &DataType, value: &Value) -> Result<Expr, String> {
-    if compares_as_text(dtype) {
-        return Ok(lit(json_to_text(value)));
-    }
-    match value {
-        Value::Number(n) if n.is_i64() => Ok(lit(n.as_i64().unwrap())),
-        Value::Number(n) => Ok(lit(n.as_f64().unwrap_or(f64::NAN))),
-        Value::Bool(b) => Ok(lit(*b)),
-        // A numeric column compared against "1000" is a common model slip; take
-        // the number rather than failing on the quotes.
-        Value::String(s) => s
-            .parse::<f64>()
-            .map(lit)
-            .map_err(|_| format!("'{}' is not a number, but the column is numeric", s)),
-        Value::Null => Err("comparison value is null; use is_empty instead".to_string()),
-        other => Err(format!("cannot compare against {}", other)),
-    }
-}
-
-fn json_to_text(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    }
-}
-
-fn predicate_expr(dtype: &DataType, predicate: &Predicate) -> Result<Expr, String> {
-    let name = predicate.col.as_str();
-    let column = if compares_as_text(dtype) {
-        col(name).cast(DataType::String)
-    } else {
-        col(name)
-    };
-
-    Ok(match predicate.op {
-        PredOp::IsEmpty => col(name)
-            .cast(DataType::String)
-            .is_null()
-            .or(col(name).cast(DataType::String).eq(lit(""))),
-        PredOp::NotEmpty => col(name)
-            .cast(DataType::String)
-            .is_null()
-            .or(col(name).cast(DataType::String).eq(lit("")))
-            .not(),
-        // Handled eagerly in matching_rows, never reached here.
-        PredOp::Contains => return Err("internal: contains is handled separately".to_string()),
-        PredOp::Between => {
-            let bounds = predicate
-                .value
-                .as_array()
-                .filter(|a| a.len() == 2)
-                .ok_or_else(|| "'between' takes a two-element [low, high] array".to_string())?;
-            column
-                .clone()
-                .gt_eq(scalar_literal(dtype, &bounds[0])?)
-                .and(column.lt_eq(scalar_literal(dtype, &bounds[1])?))
-        }
-        PredOp::In | PredOp::NotIn => {
-            let items = predicate
-                .value
-                .as_array()
-                .ok_or_else(|| "'in' takes an array of values".to_string())?;
-            let mut any: Option<Expr> = None;
-            for item in items {
-                let eq = column.clone().eq(scalar_literal(dtype, item)?);
-                any = Some(match any {
-                    Some(acc) => acc.or(eq),
-                    None => eq,
-                });
-            }
-            // An empty list matches nothing, which `not` then turns into
-            // everything — both are the mathematically right answers.
-            let any = any.unwrap_or_else(|| lit(false));
-            if predicate.op == PredOp::In {
-                any
-            } else {
-                any.not()
-            }
-        }
-        PredOp::Eq => column.eq(scalar_literal(dtype, &predicate.value)?),
-        PredOp::Ne => column.neq(scalar_literal(dtype, &predicate.value)?),
-        PredOp::Gt => column.gt(scalar_literal(dtype, &predicate.value)?),
-        PredOp::Ge => column.gt_eq(scalar_literal(dtype, &predicate.value)?),
-        PredOp::Lt => column.lt(scalar_literal(dtype, &predicate.value)?),
-        PredOp::Le => column.lt_eq(scalar_literal(dtype, &predicate.value)?),
-    })
-}
-
-// ── select ──────────────────────────────────────────────────────────────────
-
-fn select(df: DataFrame, names: &[String]) -> Result<DataFrame, String> {
-    let mut metas = Vec::with_capacity(names.len());
-    for name in names {
-        metas.push(df.columns[column_index(&df, name)?].clone());
-    }
-
-    let pdf = df
-        .df
-        .select(names.iter().map(|s| s.as_str()))
-        .map_err(|e| e.to_string())?;
-
-    // Row count is unchanged, so the existing row_order stays valid.
-    Ok(DataFrame {
-        df: pdf,
-        columns: metas,
-        ..df
-    })
-}
-
-// ── group_by ────────────────────────────────────────────────────────────────
-
-/// A plain group-by: exactly the requested aggregates, in the requested order.
-///
-/// Deliberately not [`DataFrame::build_frequency_table`], which hard-codes a
-/// `Count` column and a count-descending sort (`dataframe.rs:1434`, `:1469`).
-/// The aggregate semantics still come from tuitab — [`AggregatorKind::to_expr`]
-/// is what defines its median, its p95 and its sample stdev.
-fn group_by(df: &DataFrame, by: &[String], agg: &[AggSpec]) -> Result<DataFrame, String> {
-    if by.is_empty() {
-        return Err("'group_by' requires at least one column in 'by'".to_string());
-    }
-
-    let visible = df.get_visible_df()?;
-    let mut exprs = Vec::with_capacity(agg.len());
-    let mut metas: Vec<ColumnMeta> = Vec::new();
-
-    for name in by {
-        metas.push(df.columns[column_index(df, name)?].clone());
-    }
-
-    for spec in agg {
-        // `count` over `*` is a row count, which needs no source column.
-        if spec.col == "*" {
-            if spec.kind != AggregatorKind::Count {
-                return Err(format!(
-                    "'{}' needs a column; only 'count' works with '*'",
-                    spec.kind.name()
-                ));
-            }
-            exprs.push(len().alias("count"));
-            let mut meta = ColumnMeta::new("count".to_string());
-            meta.col_type = ColumnType::Integer;
-            metas.push(meta);
-            continue;
-        }
-
-        let source = &df.columns[column_index(df, &spec.col)?];
-
-        // build_frequency_table skips an incompatible aggregator silently
-        // (dataframe.rs:1445). Here that would hand the model a short answer it
-        // has no way to notice, so it is an error instead.
-        if !spec.kind.is_compatible(source.col_type) {
-            return Err(format!(
-                "Cannot compute {} over '{}': the column is {}, and {} needs a numeric one",
-                spec.kind.name(),
-                spec.col,
-                super::render::type_name(source.col_type),
-                spec.kind.name()
-            ));
-        }
-
-        let expr = spec.kind.to_expr(&spec.col).ok_or_else(|| {
-            format!(
-                "'{}' is not available as a group aggregate",
-                spec.kind.name()
-            )
-        })?;
-
-        let alias = format!("{}:{}", spec.col, spec.kind.name());
-        exprs.push(expr.alias(&alias));
-
-        let mut meta = ColumnMeta::new(alias);
-        if spec.kind.preserves_col_type() {
-            meta.col_type = source.col_type;
-            meta.currency = source.currency;
-            meta.precision = source.precision;
-        } else {
-            meta.col_type = ColumnType::Integer;
-        }
-        metas.push(meta);
-    }
-
-    if exprs.is_empty() {
-        return Err("'group_by' requires at least one aggregate in 'agg'".to_string());
-    }
-
-    // `group_by_stable`, not `group_by`: the unstable variant returns groups in
-    // an arbitrary order, and a tool sold on determinism cannot do that.
-    let grouped = visible
-        .lazy()
-        .group_by_stable(by.iter().map(|s| col(s.as_str())).collect::<Vec<_>>())
-        .agg(exprs)
-        .collect()
-        .map_err(|e| format!("group_by failed: {}", e))?;
-
-    Ok(from_parts(grouped, metas))
-}
-
-// ── frequency ───────────────────────────────────────────────────────────────
-
-/// Count-ranked distribution, with a `Pct` share column.
-///
-/// This is [`DataFrame::build_frequency_table`] as it actually behaves: `Count`
-/// is always present and the result is sorted by it descending.  The `Bar`
-/// column it appends is an ASCII sparkline for the TUI and pure noise in JSON,
-/// so it is dropped here rather than by changing a function the TUI depends on.
-fn frequency(df: &DataFrame, by: &[String], agg: &[AggSpec]) -> Result<DataFrame, String> {
-    if by.is_empty() {
-        return Err("'frequency' requires at least one column in 'by'".to_string());
-    }
-
-    let group_indices: Vec<usize> = by
-        .iter()
-        .map(|name| column_index(df, name))
-        .collect::<Result<_, _>>()?;
-
-    let mut aggregated: Vec<(usize, Vec<AggregatorKind>)> = Vec::new();
-    for spec in agg {
-        let idx = column_index(df, &spec.col)?;
-        let source = &df.columns[idx];
-        if !spec.kind.is_compatible(source.col_type) {
-            return Err(format!(
-                "Cannot compute {} over '{}': the column is {}, and {} needs a numeric one",
-                spec.kind.name(),
-                spec.col,
-                super::render::type_name(source.col_type),
-                spec.kind.name()
-            ));
-        }
-        match aggregated.iter_mut().find(|(i, _)| *i == idx) {
-            Some((_, kinds)) => kinds.push(spec.kind),
-            None => aggregated.push((idx, vec![spec.kind])),
-        }
-    }
-
-    let (pdf, metas) = if group_indices.len() == 1 {
-        df.build_frequency_table(group_indices[0], &aggregated)?
-    } else {
-        df.build_multi_frequency_table(&group_indices, &aggregated)?
-    };
-
-    let mut result = from_parts(pdf, metas);
-    if let Some(bar) = result.columns.iter().position(|c| c.name == "Bar") {
-        result.drop_column(bar)?;
-    }
-    Ok(result)
+    Ok(DataFrame::from_parts(visible, df.columns))
 }
 
 // ── pivot ───────────────────────────────────────────────────────────────────
@@ -747,13 +549,13 @@ fn pivot(df: &DataFrame, index: &[String], on: &str, formula: &str) -> Result<Da
         return Err("'pivot' requires at least one column in 'index'".to_string());
     }
     for name in index {
-        column_index(df, name)?;
+        df.column_index(name)?;
     }
-    column_index(df, on)?;
+    df.column_index(on)?;
 
     let expr =
         TuiExpr::parse(formula).map_err(|e| format!("in pivot formula '{}': {}", formula, e))?;
 
     let (pdf, metas) = df.create_pivot_table(index, on, &expr)?;
-    Ok(from_parts(pdf, metas))
+    Ok(DataFrame::from_parts(pdf, metas))
 }

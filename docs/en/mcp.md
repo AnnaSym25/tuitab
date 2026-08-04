@@ -1,0 +1,222 @@
+# MCP server
+
+> 🇷🇺 [Эта страница на русском](../ru/mcp.md) · [← Documentation index](README.md)
+
+`tuitab --mcp` turns the binary into a [Model Context Protocol](https://modelcontextprotocol.io)
+server. An assistant handed a data file can then compute over it with tuitab's
+engine instead of doing the arithmetic in its head.
+
+The point is narrow and worth stating plainly: **a language model asked to sum a
+column will produce a plausible number.** Sending the question to a real engine
+and reading back the answer is the difference between a report you can act on
+and one you have to check.
+
+## Connecting
+
+**Claude Code** — one command:
+
+```sh
+claude mcp add tuitab -- tuitab --mcp
+```
+
+Add `-s user` to make it available in every project rather than the current one.
+
+**Claude Desktop** — `~/Library/Application Support/Claude/claude_desktop_config.json`
+on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows:
+
+```json
+{
+  "mcpServers": {
+    "tuitab": {
+      "command": "/opt/homebrew/bin/tuitab",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+The full path matters more than it looks: a desktop app does not start from your
+shell and may not see your `PATH`. `which tuitab` will tell you yours.
+
+**Cursor, Windsurf, Zed** — the same block in their `mcp.json`.
+
+**Anything else** — it is an ordinary stdio server. Launch it as a subprocess,
+write newline-delimited JSON-RPC to its stdin, read replies from stdout.
+Protocol versions `2025-06-18`, `2025-03-26` and `2024-11-05` are all accepted.
+
+## Checking it works
+
+Without any client at all:
+
+```sh
+printf '%s\n' \
+ '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' \
+ '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+ '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | tuitab --mcp
+```
+
+The second reply lists four tools. In Claude Code, `/mcp` shows the same thing.
+
+## The four tools
+
+| Tool | What it answers |
+|------|-----------------|
+| `tuitab_inspect` | What is in this file — sheets or tables, column names, inferred types, row count, a few sample rows |
+| `tuitab_query` | Everything computational, as a pipeline of operations |
+| `tuitab_describe` | A statistical profile of every column |
+| `tuitab_jq` | A jq program over nested JSON, JSONL, YAML or TOML |
+
+`tuitab_inspect` comes first in any session. Column names guessed from a file
+name are wrong often enough to cost a round trip.
+
+## Operations
+
+`tuitab_query` takes a `source` and a list of `ops` applied in order, each to the
+result of the last.
+
+```json
+{
+  "source": {"path": "/data/sales.xlsx", "container": "Q3"},
+  "ops": [
+    {"filter": [{"col": "status", "op": "eq", "value": "closed"}]},
+    {"compute": {"name": "margin", "expr": "revenue - cost"}},
+    {"group_by": {"by": ["region"], "agg": [{"col": "margin", "fn": "sum"}]}},
+    {"sort": {"by": [{"col": "margin:sum", "desc": true}]}}
+  ]
+}
+```
+
+| Operation | Notes |
+|-----------|-------|
+| `filter` | Entries are combined with AND. Operators: `eq`, `ne`, `gt`, `ge`, `lt`, `le`, `in`, `not_in`, `contains` (regex), `between`, `is_empty`, `not_empty` |
+| `select` | Keep these columns, in this order |
+| `sort` | `{"col": …, "desc": …}` for one key, `{"by": [{…}, {…}]}` for several |
+| `compute` | A derived column from an expression |
+| `group_by` | Exactly the aggregates asked for, in the order asked for |
+| `aggregate` | A grand total — one row, no grouping |
+| `frequency` | Distribution ranked by count, with `Count` and `Pct` |
+| `pivot` | Rows by `index`, columns by `on`, cells by `formula` |
+| `join` | Against a second file, `how`: inner / left / right / outer |
+| `dedup` | One row per key. `keep`: first, last, min, max, random |
+| `duplicates` | Only the rows whose key repeats |
+| `sample` | `n` rows at random |
+| `window` | A column computed from the rows around each row. `order_by` sets the window's own order without touching the table's |
+| `transpose` | The table on end, or one row of it |
+| `limit` | The first `n` rows |
+
+For OR, wrap alternatives in `any_of`:
+
+```json
+{"filter": [
+  {"any_of": [{"col": "region", "op": "eq", "value": "North"},
+              {"col": "region", "op": "eq", "value": "South"}]},
+  {"col": "amount", "op": "gt", "value": 1000}
+]}
+```
+
+which reads as `(North OR South) AND amount > 1000`. One level of nesting.
+
+To compare two columns, give a column where a constant would go:
+
+```json
+{"col": "revenue", "op": "gt", "value": {"col": "cost"}}
+```
+
+SQL's `HAVING` is a `filter` placed after `group_by`.
+
+### Window functions
+
+```json
+{"window": {"fn": "rank", "col": "salary", "over": ["department"],
+            "as": "rank_in_dept", "desc": true}}
+```
+
+`row_number`, `rank`, `dense_rank`, `cum_sum`, `lag`, `lead`, the partition's
+`sum` / `avg` / `min` / `max` / `count` repeated on its rows, and `pct_of_total`.
+
+`over` restarts the window per group; without it the window is the whole table.
+
+`order_by` settles what "before" means for `cum_sum`, `lag`, `lead` and
+`row_number` — the four that read the rows in order:
+
+```json
+{"window": {"fn": "cum_sum", "col": "amount", "order_by": ["date"],
+            "over": ["region"], "as": "running_total"}}
+```
+
+It orders the rows **for the window only**: the answer comes back against the
+rows where they already are, so the table itself is untouched. Ties keep their
+relative order and empty values sort last, so the same question gives the same
+answer twice. `desc` runs the order the other way.
+
+Without `order_by` those four read the frame as it stands, which is whatever
+order the file happened to be written in. The other eight refuse an `order_by`
+rather than ignoring it — a sum is a sum whatever order it is added in, and a
+rank orders by the value it reads.
+
+Use `window` with `over` for a share within a group, and `compute` with
+`amount / sum(amount)` for a share of the whole table.
+
+## Reading the answers
+
+Rows come back as arrays matching the `columns` list:
+
+```json
+{
+  "columns": [{"name": "region", "type": "string"},
+              {"name": "amount:sum", "type": "float"}],
+  "rows": [["North", 563001.5], ["South", 480000.5]],
+  "row_count": 2, "returned": 2, "truncated": false
+}
+```
+
+- **Percentages are fractions.** `0.42` means 42%.
+- **Currency and floats are raw numbers**, not formatted strings — the
+  formatting belongs to a person reading a file, not to a model computing.
+- **`truncated` matters.** When it is true you are looking at part of the answer.
+
+## Getting a file out
+
+`output.path` writes the result instead of returning rows:
+
+```json
+{"output": {"path": "/data/report.xlsx"}}
+```
+
+The extension picks the format — `.xlsx`, `.csv`, `.tsv`, `.parquet`, `.json`,
+`.jsonl`, `.yaml`, `.toml`, `.sqlite`. Unlike the JSON above, that file *is*
+formatted for a person: currency symbols, fixed decimals.
+
+Use it for anything the user wants to keep, and for results too large to return.
+
+## Things that catch people out
+
+**Paths are resolved by the server, not by the model.** A relative path is
+relative to wherever the client launched the process, which is rarely where the
+data is. Give absolute paths.
+
+**Multi-table files need a `container`.** For `.xlsx`, `.sqlite` and `.duckdb`,
+`tuitab_inspect` without one lists the sheets or tables; pass the one you want to
+see its columns.
+
+**Nested data has a limit.** `tuitab_query` flattens JSON, YAML and TOML into a
+table. When the structure is deeper than that survives, `tuitab_jq` takes a jq
+program instead.
+
+**Random results report their seed.** An unseeded `sample` or `dedup` returns the
+seed it drew, so the same answer can be had again by passing it back.
+
+## What it will not do
+
+There is no SQL and no arbitrary code. The model sends structured operations,
+each one mapping onto a function tuitab already had, and gets back numbers Polars
+computed. That is a deliberate limit, not an unfinished one: an operation
+validated against a schema fails loudly when it is wrong, where a mistyped SQL
+string quietly returns the wrong number.
+
+Not supported: subqueries, self-joins, and SQL of any kind.
+
+## Where the documentation lives
+
+The server ships its own. The tool list and usage notes reach the model on
+connect, so it does not need this page — this one is for you.

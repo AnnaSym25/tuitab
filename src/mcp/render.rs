@@ -15,7 +15,6 @@
 //! never mistaken for a complete one.
 
 use crate::data::dataframe::DataFrame;
-use crate::types::ColumnType;
 use polars::prelude::AnyValue;
 use serde_json::{json, Map, Value};
 
@@ -24,20 +23,6 @@ pub const DEFAULT_LIMIT: usize = 100;
 /// Ceiling on the serialised row payload.  Rows stop being added once crossing
 /// it, whatever `limit` said.
 pub const MAX_BYTES: usize = 256 * 1024;
-
-pub fn type_name(t: ColumnType) -> &'static str {
-    match t {
-        ColumnType::String => "string",
-        ColumnType::Integer => "integer",
-        ColumnType::Float => "float",
-        ColumnType::Date => "date",
-        ColumnType::Datetime => "datetime",
-        ColumnType::Boolean => "boolean",
-        ColumnType::Percentage => "percentage",
-        ColumnType::Currency => "currency",
-        ColumnType::FileSize => "filesize",
-    }
-}
 
 /// Convert one cell to JSON, keeping numbers as numbers.
 fn cell(value: &AnyValue) -> Value {
@@ -68,7 +53,7 @@ fn cell(value: &AnyValue) -> Value {
 pub fn columns_json(df: &DataFrame) -> Vec<Value> {
     df.columns
         .iter()
-        .map(|c| json!({"name": c.name, "type": type_name(c.col_type)}))
+        .map(|c| json!({"name": c.name, "type": c.col_type.name()}))
         .collect()
 }
 

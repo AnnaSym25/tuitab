@@ -45,18 +45,32 @@ a directory path (which lists its files). For xlsx, sqlite and duckdb, pass \
 
 OPERATIONS for tuitab_query
   {\"filter\": [{\"col\":\"region\",\"op\":\"eq\",\"value\":\"North\"}]}
-      Predicates are combined with AND. There is no OR. Operators: eq, ne, gt, \
-      ge, lt, le, in, not_in, contains (regex, case-sensitive — write (?i) \
-      yourself), between ([low, high]), is_empty, not_empty.
+      Entries are combined with AND. Operators: eq, ne, gt, ge, lt, le, in, \
+      not_in, contains (regex, case-sensitive — write (?i) yourself), between \
+      ([low, high]), is_empty, not_empty.
+      For OR, wrap predicates in any_of — one entry, several alternatives:
+        {\"filter\": [{\"any_of\": [{\"col\":\"region\",\"op\":\"eq\",\"value\":\"North\"},
+                                {\"col\":\"region\",\"op\":\"eq\",\"value\":\"South\"}]},
+                    {\"col\":\"amount\",\"op\":\"gt\",\"value\":1000}]}
+      reads as (North OR South) AND amount > 1000. One level of nesting only.
+      To compare two columns, give a column instead of a constant:
+        {\"col\":\"revenue\",\"op\":\"gt\",\"value\":{\"col\":\"cost\"}}
   {\"select\": [\"a\",\"b\"]}          keep these columns, in this order
   {\"sort\": {\"col\":\"amount\",\"desc\":true}}
+  {\"sort\": {\"by\":[{\"col\":\"region\"},{\"col\":\"amount\",\"desc\":true}]}}
+      Use 'by' for several keys, first the most significant. Do NOT chain two \
+      sort operations to get that — the second is free to reorder rows that tie \
+      on its own key, so the first ordering is not preserved.
   {\"compute\": {\"name\":\"margin\",\"expr\":\"revenue - cost\"}}
-      Expression syntax: arithmetic, comparisons, if(cond, a, b), concat, \
-      substring, len, year/month/day, date_format, and 'x in (a, b)'. No 'and' \
-      or 'or'.
+      Expression syntax: arithmetic, comparisons, and/or/not, if(cond, a, b), \
+      concat, substring, len, contains(col, regex), year/month/day, \
+      date_format, and 'x in (a, b)'. 'or' binds loosest, then 'and', then \
+      'not'.
   {\"group_by\": {\"by\":[\"region\"],\"agg\":[{\"col\":\"amount\",\"fn\":\"sum\"}]}}
       Exactly the aggregates you ask for. Result columns are named 'col:fn'. \
       Use {\"col\":\"*\",\"fn\":\"count\"} for a row count.
+  {\"aggregate\": [{\"col\":\"amount\",\"fn\":\"sum\"},{\"col\":\"*\",\"fn\":\"count\"}]}
+      A grand total over every remaining row — one row out, no grouping.
   {\"frequency\": {\"by\":[\"product\"]}}
       Distribution ranked by count, descending, with Count and Pct columns. Use \
       this for 'how many of each' / 'most common'; use group_by when you want \
@@ -64,13 +78,28 @@ OPERATIONS for tuitab_query
   {\"pivot\": {\"index\":[\"region\"],\"on\":\"quarter\",\"formula\":\"sum(amount)\"}}
   {\"join\": {\"source\":{\"path\":\"prices.csv\"},\"left_on\":[\"id\"],\"how\":\"left\"}}
       how: inner, left, right, outer. 'right_on' defaults to 'left_on'.
+  {\"dedup\": {\"by\":[\"id\"],\"keep\":\"first\"}}
+      keep: first, last, min, max (both need \"on\": column), random (pass \
+      \"seed\" to repeat the same choice).
+  {\"duplicates\": {\"by\":[\"email\"]}}   keep only rows whose key repeats
+  {\"window\": {\"fn\":\"rank\",\"col\":\"salary\",\"over\":[\"department\"],\"desc\":true}}
+      fn: row_number, rank, dense_rank, cum_sum, lag, lead, sum, avg, min, \
+      max, count, pct_of_total. 'over' restarts the window per group; without \
+      it the window is the whole table. 'as' names the new column. \
+      IMPORTANT: cum_sum, lag, lead and row_number read the rows in their \
+      current order — sort first, or a running total accumulates in load order.
+  {\"sample\": {\"n\":100,\"seed\":42}}   keep n rows at random; the seed makes it repeatable
+  {\"transpose\": {}}            stand the table on end; {\"row\": 3} for one row
   {\"limit\": 20}
 Aggregate functions: count, distinct, sum, avg, min, max, median, stdev, p5, \
 p25, p50, p75, p95.
 To filter groups (SQL's HAVING), put a filter after group_by.
 
-NOT SUPPORTED — do not attempt: window functions (rank, lag, running totals), \
-OR between predicates, subqueries, self-joins, and SQL of any kind.
+NOT SUPPORTED — do not attempt: subqueries, self-joins, and SQL of any kind.
+
+PERCENT OF TOTAL
+Use window with 'over' for a share within a group; use compute with \
+'amount / sum(amount)' for a share of the whole table.
 
 READING RESULTS
 Rows come back as arrays matching the 'columns' list. Percentages are \
@@ -140,8 +169,8 @@ pub fn definitions() -> Vec<Value> {
             "title": "Compute over a data file",
             "description":
                 "Run one or more pipelines of operations over a file and return the results. \
-                 Operations apply in order: filter, select, sort, compute, group_by, frequency, \
-                 pivot, join, limit. Several pipelines in one call share a single load of the \
+                 Operations apply in order: filter, select, sort, compute, group_by, aggregate, \
+                 frequency, pivot, join, limit. Several pipelines in one call share a single load of the \
                  file. Use this for every calculation over tabular data — the numbers it returns \
                  are computed, not estimated.",
             "inputSchema": {
@@ -367,7 +396,7 @@ fn query(server: &mut Server, args: &Value) -> Result<Value, CallError> {
         let label = name
             .clone()
             .unwrap_or_else(|| format!("pipeline_{}", index));
-        let df = pipeline::apply_all(base.clone(), ops)
+        let (df, seeds) = pipeline::apply_all_reporting_seeds(base.clone(), ops)
             .map_err(|e| CallError::Failed(format!("{}: {}", label, e)))?;
 
         let mut entry = match &output.path {
@@ -376,6 +405,20 @@ fn query(server: &mut Server, args: &Value) -> Result<Value, CallError> {
         };
         if let (Some(name), Some(obj)) = (name, entry.as_object_mut()) {
             obj.insert("name".into(), json!(name));
+        }
+        // Any seed drawn for the caller, so the same random result can be had
+        // again by passing it back.
+        if !seeds.0.is_empty() {
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert(
+                    "seeds".into(),
+                    json!(seeds
+                        .0
+                        .iter()
+                        .map(|(op, seed)| json!({"op": op, "seed": seed}))
+                        .collect::<Vec<_>>()),
+                );
+            }
         }
         results.push(entry);
     }

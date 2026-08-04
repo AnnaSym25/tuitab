@@ -62,6 +62,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         | AppMode::CurrencySelect
         | AppMode::PivotTableInput
         | AppMode::PartitionSelect
+        | AppMode::WindowFnSelect
+        | AppMode::WindowDirSelect
+        | AppMode::WindowOrderSelect
         | AppMode::Help
         | AppMode::ChartAggSelect
         | AppMode::JoinSelectSource
@@ -182,6 +185,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             }
             if app.mode == AppMode::AggregatorSelect {
                 popup::render_aggregator_popup(frame, app, frame.area());
+            }
+            if app.mode == AppMode::WindowFnSelect {
+                popup::render_window_fn_popup(frame, app, frame.area());
+            }
+            if app.mode == AppMode::WindowOrderSelect {
+                popup::render_window_order_popup(frame, app, frame.area());
+            }
+            if app.mode == AppMode::WindowDirSelect {
+                popup::render_window_dir_popup(frame, app, frame.area());
             }
             if app.mode == AppMode::PartitionSelect {
                 popup::render_partition_select_popup(frame, app, frame.area());

@@ -27,6 +27,23 @@ pub struct AggregatorState {
     pub selected: HashSet<AggregatorKind>,
 }
 
+/// Which window function `zw` is offering.
+#[derive(Default)]
+pub struct WindowFnState {
+    pub select_index: usize,
+    /// Which column orders the rows for the window, from the order picker.
+    /// `None` is the table's own order.
+    pub order_by: Option<String>,
+    /// Highlighted row of the order picker: 0 is "the table's order", and
+    /// column `i` is at `i + 1`.
+    pub order_index: usize,
+    /// Set by the direction picker, read by `add_window`. Lives here rather
+    /// than on `App` so that resetting it is the same one line that resets
+    /// `select_index` when `zw` opens — a second field with its own cleanup on
+    /// each cancel path is how `pending_window_fn` came to survive Esc.
+    pub desc: bool,
+}
+
 #[derive(Default)]
 pub struct TypeSelectState {
     pub index: usize,
