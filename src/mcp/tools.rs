@@ -118,11 +118,11 @@ Set output.path to write the result to a file instead of returning rows: \
 .xlsx, .csv, .tsv, .parquet, .arrow, .json, .jsonl, .yaml, .toml, .sqlite, .duckdb. \
 That file is formatted for a person to read. Use it whenever the user wants a \
 deliverable, or when a result is too big to return. For .sqlite and .duckdb, \
-output.table names the table (default 'result'). Writing into a database file that \
-already exists changes data the user already has, so it needs the server to have been \
-started with --mcp-write; a database file that does not exist yet is created without \
-it. Replacing a table that is already there additionally needs output.overwrite, and \
-the file a query read cannot be the file it writes.
+output.table names the table (default 'result'). Adding a table to a database leaves \
+the tables already in it alone and needs nothing extra, so several writes can build up \
+one file. Replacing a table that is already there destroys its rows: that needs both \
+output.overwrite and the server to have been started with --mcp-write. The file a query \
+read cannot be the file it writes.
 
 NESTED DATA
 tuitab_query flattens JSON/YAML/TOML into a table. When the structure is deeper \
@@ -756,20 +756,22 @@ fn write_result(
             )));
         }
 
-        // A database that already exists holds somebody's data, and writing into it is
-        // the thing --mcp-write gates.  A file that does not exist yet has nothing to
-        // lose, which is the same rule the terminal uses to skip its own confirmation.
-        if path.exists() && !write_enabled {
-            return Err(CallError::Failed(format!(
-                "{} already exists, and changing a database the user already has needs \
-                 the server to be started with --mcp-write. Write to a new file instead.",
-                path.display()
-            )));
-        }
-
-        // For a database the unit at stake is the table, not the file: adding one beside
-        // what is already there loses nothing, so only replacing one needs permission.
+        // For a database the unit at stake is the table, not the file: `create_table`
+        // touches only the one it names, so adding a table beside what is already there
+        // destroys nothing and is allowed — otherwise a database of several tables could
+        // not be built at all, the second write always landing on a file that now exists.
+        // Replacing a table does destroy rows somebody has, and that is what --mcp-write
+        // gates, on top of the caller having to ask for it with output.overwrite.
         if db_write::table_exists(kind, path, table) {
+            if !write_enabled {
+                return Err(CallError::Failed(format!(
+                    "'{}' already exists in {}, and replacing a table the user already \
+                     has needs the server to be started with --mcp-write. Choose another \
+                     table name to add one beside it.",
+                    table,
+                    path.display()
+                )));
+            }
             if !overwrite {
                 return Err(CallError::Failed(format!(
                     "'{}' already exists in {}. Pass output.overwrite to replace it, or \

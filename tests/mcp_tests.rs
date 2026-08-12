@@ -1604,38 +1604,70 @@ fn a_duckdb_file_named_db_is_read_as_duckdb() {
 
 // ── The write gate on output.path ─────────────────────────────────────────────────
 
+/// The gate is on the table, not the file: a second table can join a database the
+/// server itself just made, while replacing one somebody has needs the flag.
 #[test]
-fn writing_into_an_existing_database_needs_the_write_flag() {
+fn adding_a_table_needs_no_flag_and_replacing_one_does() {
     let mut off = Server::new();
+
+    // A database built up over two writes, with the flag off throughout.
+    let fresh = tmp("gate-fresh.sqlite");
+    let _ = std::fs::remove_file(&fresh);
+    for table in ["first", "second"] {
+        call(
+            &mut off,
+            "tuitab_query",
+            json!({"source": "test_data/sample.csv", "ops": [],
+                   "output": {"path": fresh.to_string_lossy(), "table": table}}),
+        );
+    }
+    let listing = call(
+        &mut off,
+        "tuitab_inspect",
+        json!({"source": fresh.to_string_lossy()}),
+    );
+    let names: Vec<&str> = listing["containers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"first") && names.contains(&"second"),
+        "both tables must be there: {:?}",
+        names
+    );
+
+    // A table added beside somebody else's leaves theirs alone.
     let db = db_fixture("gate-existing.sqlite");
-    let message = call_expecting_failure(
+    call(
         &mut off,
         "tuitab_query",
         json!({"source": "test_data/sample.csv", "ops": [],
                "output": {"path": db.to_string_lossy(), "table": "imported"}}),
     );
-    assert!(message.contains("--mcp-write"), "{}", message);
-    assert_eq!(names_in(&db), ["ann", "bob", "cara"], "nothing written");
+    assert_eq!(names_in(&db), ["ann", "bob", "cara"], "users untouched");
 
-    // A database that does not exist yet has nothing to lose.
-    let fresh = tmp("gate-fresh.sqlite");
-    let _ = std::fs::remove_file(&fresh);
-    call(
+    // Replacing one is refused in the same breath as the flag that would allow it,
+    // and asking for overwrite does not get round it.
+    let message = call_expecting_failure(
         &mut off,
         "tuitab_query",
         json!({"source": "test_data/sample.csv", "ops": [],
-               "output": {"path": fresh.to_string_lossy(), "table": "imported"}}),
+               "output": {"path": db.to_string_lossy(), "table": "users", "overwrite": true}}),
     );
-    assert!(fresh.exists());
+    assert!(message.contains("--mcp-write"), "{}", message);
+    assert_eq!(names_in(&db), ["ann", "bob", "cara"], "nothing written");
 
-    // And with the flag, the existing one is fine.
+    // And with the flag, it goes through.
     let mut on = writable_server();
     call(
         &mut on,
         "tuitab_query",
         json!({"source": "test_data/sample.csv", "ops": [],
-               "output": {"path": db.to_string_lossy(), "table": "imported"}}),
+               "output": {"path": db.to_string_lossy(), "table": "users", "overwrite": true}}),
     );
+    assert_ne!(names_in(&db), ["ann", "bob", "cara"], "users replaced");
     std::fs::remove_file(&db).unwrap();
     std::fs::remove_file(&fresh).unwrap();
 }

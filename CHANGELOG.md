@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-12
+
+### Changed
+
+- Bump dependencies: `clap` 4.6.5 → 4.6.6, `jaq-json` 2.0.1 → 2.0.2,
+  `rust_xlsxwriter` 0.96.0 → 0.97.1. No user-facing behaviour change.
+- **The MCP write gate is on the table, not the file.** `output.path` pointing at
+  a `.sqlite`/`.duckdb` file that already existed was refused outright without
+  `--mcp-write`, which made a database of several tables impossible to build: the
+  first write created the file and the second hit "already exists" — including on
+  the file the server had just made itself. Adding a table leaves every other
+  table in the file alone, so it now needs nothing extra. Replacing one destroys
+  rows somebody has, and that still needs `--mcp-write`, on top of the
+  `output.overwrite` the caller has to ask for.
+
 ## [0.8.1] - 2026-08-12
 
 ### Changed
@@ -849,7 +864,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Non-English keyboard remapping
 - Three binary aliases: `tuitab`, `ttab`, `tt`
 
-[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/denisotree/tuitab/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/denisotree/tuitab/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/denisotree/tuitab/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/denisotree/tuitab/compare/v0.6.0...v0.7.0

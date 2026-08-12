@@ -3,7 +3,7 @@
 # AUR page: https://aur.archlinux.org/packages/tuitab-bin
 
 pkgname=tuitab-bin
-pkgver=0.8.1
+pkgver=0.8.2
 pkgrel=1
 pkgdesc="Terminal tabular data explorer — CSV/JSON/YAML/TOML/Parquet/Excel/SQLite viewer (pre-built binary)"
 arch=('x86_64' 'aarch64')
