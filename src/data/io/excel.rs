@@ -174,10 +174,30 @@ fn typed_series(name: &str, values: Vec<String>) -> Series {
     text
 }
 
+/// One cell as text.
+///
+/// A date in a spreadsheet is a number with a format on it, and calamine renders it as
+/// that number: the day tuitab showed as `46051` was the 29th of January 2026. What a
+/// spreadsheet holds is a date, so it is written the way every other reader here writes
+/// one — `2026-01-29`, or with the time when there is one — which is also what the CSV
+/// loader leaves in a date column.
+fn cell_text(cell: &calamine::Data) -> String {
+    use calamine::{Data, DataType};
+    match cell {
+        Data::DateTime(_) | Data::DateTimeIso(_) => match cell.as_datetime() {
+            Some(dt) if dt.time() == chrono::NaiveTime::MIN => dt.date().to_string(),
+            Some(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+            // A duration, or a serial the calendar cannot place — left as it came.
+            None => cell.to_string(),
+        },
+        other => other.to_string(),
+    }
+}
+
 fn parse_excel_range(range: calamine::Range<calamine::Data>) -> Result<DataFrame> {
     let all_rows: Vec<Vec<String>> = range
         .rows()
-        .map(|row| row.iter().map(|c| c.to_string()).collect())
+        .map(|row| row.iter().map(cell_text).collect())
         .collect();
 
     let mut iter = all_rows.into_iter();

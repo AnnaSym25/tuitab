@@ -106,3 +106,38 @@ fn a_padded_number_stays_the_text_it_is() {
         "its neighbour is still a number"
     );
 }
+
+#[test]
+fn a_date_cell_is_a_date_and_not_its_serial_number() {
+    // A date in a spreadsheet is a number with a format on it. Read as the number, the
+    // 29th of January 2026 arrives as 46051 — which is what tuitab used to answer.
+    use rust_xlsxwriter::{ExcelDateTime, Format, Workbook};
+    let path = tmp("dates.xlsx");
+    let mut wb = Workbook::new();
+    {
+        let day = Format::new().set_num_format("yyyy-mm-dd");
+        let moment = Format::new().set_num_format("yyyy-mm-dd hh:mm:ss");
+        let sheet = wb.add_worksheet();
+        sheet.write_string(0, 0, "day").unwrap();
+        sheet.write_string(0, 1, "moment").unwrap();
+        sheet
+            .write_with_format(1, 0, ExcelDateTime::from_ymd(2026, 1, 29).unwrap(), &day)
+            .unwrap();
+        sheet
+            .write_with_format(
+                1,
+                1,
+                ExcelDateTime::from_ymd(2026, 1, 29)
+                    .unwrap()
+                    .and_hms(14, 30, 0)
+                    .unwrap(),
+                &moment,
+            )
+            .unwrap();
+    }
+    wb.save(&path).unwrap();
+
+    let df = load_file(&path, None).unwrap();
+    assert_eq!(df.get_physical(0, 0), "2026-01-29");
+    assert_eq!(df.get_physical(0, 1), "2026-01-29 14:30:00");
+}

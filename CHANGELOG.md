@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-12
+
+### Fixed
+
+- **A date in a spreadsheet came back as its serial number.** Excel stores a date
+  as a count of days with a format hung on it, and tuitab read the count: the
+  29th of January 2026 arrived as `46051`. It is now written the way every other
+  reader here writes a date — `2026-01-29`, or `2026-01-29 14:30:00` when the
+  cell carries a time — which is what the CSV loader leaves in a date column too.
+  The bug is as old as the xlsx reader; it only became visible in 0.9.0, when
+  those columns stopped being text and the number was left standing on its own.
+
 ## [0.9.0] - 2026-08-12
 
 ### Documentation
@@ -960,7 +972,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Non-English keyboard remapping
 - Three binary aliases: `tuitab`, `ttab`, `tt`
 
-[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/denisotree/tuitab/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/denisotree/tuitab/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/denisotree/tuitab/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/denisotree/tuitab/compare/v0.8.0...v0.8.1
