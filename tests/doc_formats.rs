@@ -1769,3 +1769,17 @@ fn an_xlsx_written_by_tuitab_reads_back() {
     assert_eq!(back.visible_row_count(), df.visible_row_count());
     assert_eq!(back.get_physical(0, 1), df.get_physical(0, 1));
 }
+
+#[test]
+fn an_arrow_file_written_by_tuitab_reads_back() {
+    let (df, _) = load_file_with_doc(&fixture("prices.csv"), None).unwrap();
+    let path = out("roundtrip.arrow");
+    let _ = std::fs::remove_file(&path);
+    save_file_as(&df, None, &path, Shape::Records, "prices").unwrap();
+
+    let (back, doc) = load_file_with_doc(&path, None).unwrap();
+    assert!(doc.is_none(), "arrow is tabular, not a document");
+    assert_eq!(back.col_count(), df.col_count());
+    assert_eq!(back.visible_row_count(), df.visible_row_count());
+    assert_eq!(back.get_physical(0, 1), df.get_physical(0, 1));
+}

@@ -51,6 +51,9 @@ impl App {
                     let col = s.cursor_col;
                     match s.dataframe.set_column_type(col, col_type) {
                         Ok(_) => {
+                            // Deliberate, unlike the String that col_replace leaves
+                            // behind — only this one may become an ALTER COLUMN TYPE.
+                            s.dataframe.columns[col].db_retype = Some(col_type);
                             let col_name = self.stack.active().dataframe.columns[col].name.clone();
                             self.mode = AppMode::Normal;
                             self.status_message =
@@ -97,6 +100,8 @@ impl App {
                     {
                         Ok(_) => {
                             s.dataframe.columns[col].currency = Some(currency);
+                            s.dataframe.columns[col].db_retype =
+                                Some(crate::types::ColumnType::Currency);
                             s.dataframe.modified = true;
                             let col_name = s.dataframe.columns[col].name.clone();
                             self.status_message =

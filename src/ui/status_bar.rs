@@ -47,6 +47,8 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         AppMode::InsertingColumn => " INSERT ",
         AppMode::ConfirmQuit => " CONFIRM",
         AppMode::SaveShapeSelect => " SHAPE  ",
+        AppMode::SqlConfirm => " SQL    ",
+        AppMode::TableNameInput => " TABLE  ",
         AppMode::DocSearching => " DOC /  ",
         AppMode::PathInput => " GOTO   ",
         AppMode::QueryInput => " QUERY  ",

@@ -105,8 +105,7 @@ impl App {
             if display_row < s.dataframe.visible_row_count() {
                 let physical_row = s.dataframe.row_order[display_row];
                 let col = s.cursor_col;
-                s.edit_input =
-                    TextInput::with_value(s.dataframe.get_physical(physical_row, col).to_string());
+                s.edit_input = TextInput::with_value(s.dataframe.get_editable(physical_row, col));
                 s.edit_row = physical_row;
                 s.edit_col = col;
                 self.mode = AppMode::Editing;
@@ -172,7 +171,7 @@ impl App {
         let initial = if let Some(display_row) = s.table_state.selected() {
             if display_row < s.dataframe.visible_row_count() {
                 let phys = s.dataframe.row_order[display_row];
-                s.dataframe.get_physical(phys, col)
+                s.dataframe.get_editable(phys, col)
             } else {
                 String::new()
             }

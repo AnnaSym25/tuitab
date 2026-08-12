@@ -92,6 +92,10 @@ pub enum AppMode {
     PathInput,
     /// Typing a jq program to run over the document (`gq`)
     QueryInput,
+    /// Reviewing the SQL that is about to be run against the source database
+    SqlConfirm,
+    /// Naming the table a new database will be given
+    TableNameInput,
 }
 
 /// Distinguishes a regular data sheet from derived views.
@@ -322,6 +326,26 @@ pub enum Action {
     CancelSave,
     SavingAutocomplete,
 
+    // ── Naming the table a new database export creates ────────────────────────
+    TableNameChar(char),
+    TableNameBackspace,
+    TableNameForwardDelete,
+    TableNameCursorLeft,
+    TableNameCursorRight,
+    TableNameCursorStart,
+    TableNameCursorEnd,
+    ApplyTableName,
+    CancelTableName,
+
+    // ── Writing back into a SQLite/DuckDB file ────────────────────────────────
+    /// Move through the statement list; the argument is a signed line delta.
+    SqlScroll(i32),
+    SqlScrollHome,
+    SqlScrollEnd,
+    /// Run the statements shown / walk away from them
+    ApplySql,
+    CancelSql,
+
     // ── Z Prefix (Column Operations) ──────────────────────────────────────────
     EnterZPrefix,
     CancelZPrefix,
@@ -427,7 +451,11 @@ pub enum Action {
     ToggleAllSelection, // 'gt' — toggle: select all if not all selected, else unselect all
 
     // ── Clipboard & row operations ────────────────────────────────────────────
-    PasteRows,                   // 'p' — paste rows from clipboard
+    PasteRows, // 'p' — paste rows from clipboard
+    PasteCell, // 'P' — paste clipboard text into the cell under the cursor
+    /// Add an empty row below / above the cursor (`o` / `O`)
+    AddRowBelow,
+    AddRowAbove,
     DeleteSelectedRows,          // 'd' — delete selected rows
     EnterYPrefix,                // 'y' — enter y-prefix mode for copy
     CancelYPrefix,               // Esc in YPrefix mode

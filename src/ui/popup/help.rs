@@ -53,6 +53,7 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect) {
         Line::from("  y → R             Entire table → format popup"),
         Line::from("  (yr, yR respect column selection via zs)"),
         Line::from("  p                 Paste rows"),
+        Line::from("  P                 Paste into the cell under the cursor"),
         Line::from(""),
         Line::from(Span::styled(
             "── Column Operations (z prefix) ────────",
@@ -120,6 +121,9 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect) {
             Style::default().fg(T::GREEN),
         )),
         Line::from("  Ctrl+S            Save / export / convert format"),
+        Line::from("  Ctrl+S            …on a DB table: write edits and column changes back"),
+        Line::from("  \\N                Type this in a cell to mean SQL NULL"),
+        Line::from("  o / O             Add an empty row below / above the cursor"),
         Line::from("  R                 Reload file from disk"),
         Line::from("  Shift+U          Undo"),
         Line::from("  Ctrl+R            Redo"),

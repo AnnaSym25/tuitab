@@ -18,7 +18,7 @@ mod actions;
 
 use crate::app_state::{
     AggregatorState, ChartState, CopyState, DedupTiebreakerState, ExpressionState, JoinState,
-    PartitionState, PivotState, SaveState, TypeSelectState,
+    PartitionState, PivotState, SaveState, SqlConfirmState, TypeSelectState,
 };
 use crate::data::aggregator::AggregatorKind;
 use crate::data::async_loader::{self, LoadEvent};
@@ -54,6 +54,8 @@ pub struct App {
     pub cursor_cell_overflow: Option<(u16, u16)>,
 
     pub save: SaveState,
+    /// The SQL about to be run against a source database, while the user reviews it.
+    pub sql: SqlConfirmState,
     pub aggregator: AggregatorState,
     pub window_fn: crate::app_state::WindowFnState,
     /// Which window function the partition picker is collecting columns for.
@@ -89,6 +91,7 @@ impl App {
             open_in_editor_pending: false,
             cursor_cell_overflow: None,
             save,
+            sql: SqlConfirmState::default(),
             aggregator: AggregatorState::default(),
             window_fn: crate::app_state::WindowFnState::default(),
             pending_window_fn: None,
@@ -145,6 +148,93 @@ impl App {
         App::new_as(path, delimiter, None)
     }
 
+    /// Open a file that is not there yet: one empty column, and the path remembered as
+    /// where `Ctrl+S` will write.
+    ///
+    /// This is how a database gets made from nothing — `tuitab inventory.sqlite` on a
+    /// missing file, then columns, rows, and a save.  It refuses two cases, which is
+    /// where a mistyped path shows up: a directory that does not exist (nothing could
+    /// be saved there anyway), and an extension tuitab cannot write, *including no
+    /// extension at all* — `tuitab notes` is far more likely to be a typo than an
+    /// intention.
+    fn blank_at(path: &Path) -> Result<Self> {
+        use crate::data::column::ColumnMeta;
+        use color_eyre::eyre::eyre;
+
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() && !parent.exists() {
+                return Err(eyre!("'{}': no such directory", parent.display()));
+            }
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default()
+            .to_lowercase();
+        let writable = crate::data::doc::Format::from_ext(&ext).is_some()
+            || matches!(
+                ext.as_str(),
+                "csv"
+                    | "tsv"
+                    | "parquet"
+                    | "arrow"
+                    | "feather"
+                    | "ipc"
+                    | "xlsx"
+                    | "xls"
+                    | "db"
+                    | "sqlite"
+                    | "sqlite3"
+                    | "duckdb"
+                    | "ddb"
+            );
+        if !writable {
+            return Err(eyre!(
+                "'{}': no such file, and tuitab cannot create a .{} — try .csv, .json, \
+                 .parquet, .xlsx, .sqlite or .duckdb",
+                path.display(),
+                if ext.is_empty() { "…" } else { &ext }
+            ));
+        }
+
+        let filename = path
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
+        // A real one-column frame, not `DataFrame::empty()`: that one is zero columns
+        // wide, which would make adding a row and every column operation a special case.
+        let pdf = polars::prelude::DataFrame::new(
+            0,
+            vec![polars::prelude::Column::new(
+                "column_1".into(),
+                Vec::<String>::new(),
+            )],
+        )?;
+        let mut dataframe =
+            DataFrame::from_parts(pdf, vec![ColumnMeta::new("column_1".to_string())]);
+        dataframe.calc_widths(40, 1000);
+
+        let mut root_sheet = Sheet::new(filename.clone(), dataframe);
+        // `Action::SaveFile` prefills from this, so Ctrl+S already offers the path the
+        // user typed on the command line.
+        root_sheet.source_path = Some(path.to_path_buf());
+
+        Ok(Self::init(
+            SheetStack::new(root_sheet),
+            AppMode::Normal,
+            format!(
+                "{} does not exist yet — Ctrl+S creates it. 'zi' adds a column, 'o' adds a row.",
+                filename
+            ),
+            SaveState {
+                input: TextInput::with_value(filename),
+                ..Default::default()
+            },
+            None,
+        ))
+    }
+
     /// Open `path`, optionally forcing a structured format instead of trusting the
     /// extension — this is what `--type yaml deploy.conf` does.
     pub fn new_as(
@@ -152,6 +242,9 @@ impl App {
         delimiter: Option<char>,
         forced_format: Option<crate::data::doc::Format>,
     ) -> Result<Self> {
+        if !path.exists() {
+            return App::blank_at(path);
+        }
         let delim_byte = delimiter.map(|c| c as u8);
 
         let filename = path
@@ -225,16 +318,17 @@ impl App {
             let row_count = dataframe.visible_row_count();
             let mut root_sheet = Sheet::new(filename.clone(), dataframe);
             root_sheet.doc = doc;
-            if matches!(ext.as_str(), "sqlite" | "sqlite3") {
-                root_sheet.sqlite_db_path = Some(path.to_path_buf());
-            } else if matches!(ext.as_str(), "duckdb" | "ddb") {
-                root_sheet.duckdb_db_path = Some(path.to_path_buf());
-            } else if ext == "db" {
-                // .db: detect by trying to open as SQLite
-                if crate::data::io::load_sqlite_overview(path).is_ok() {
-                    root_sheet.sqlite_db_path = Some(path.to_path_buf());
-                } else {
-                    root_sheet.duckdb_db_path = Some(path.to_path_buf());
+            // Which engine is the file's business, not its name's — the same question
+            // `load_file_as` just answered, settled the same way so the two cannot
+            // disagree about what was opened.
+            if crate::data::io::db_write::is_db_ext(path) {
+                match crate::data::io::db_write::kind_for_path(path) {
+                    crate::data::io::db_write::DbKind::Sqlite => {
+                        root_sheet.sqlite_db_path = Some(path.to_path_buf())
+                    }
+                    crate::data::io::db_write::DbKind::DuckDb => {
+                        root_sheet.duckdb_db_path = Some(path.to_path_buf())
+                    }
                 }
             }
             root_sheet.xlsx_db_path = xlsx_db;
@@ -363,6 +457,7 @@ impl App {
                     s.dataframe = dataframe;
                     s.doc = doc;
                     s.dataframe.calc_widths(40, 1000);
+                    s.reapply_sort();
                     let vis = s.dataframe.visible_row_count();
                     s.scroll_state = ScrollbarState::new(vis.saturating_sub(1));
                     s.table_state.select(Some(0));
@@ -414,24 +509,23 @@ impl App {
         let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
         let file_size = meta.map(|m| m.len()).unwrap_or(0);
 
-        let saved_row = {
-            let s = self.stack.active_mut();
-            s.undo_stack.clear();
-            s.redo_stack.clear();
-            s.sort_keys.clear();
-            s.search_pattern = None;
-            s.search_col = None;
-            s.dataframe.selected_rows.clear();
-            s.table_state.selected().unwrap_or(0)
-        };
+        // Nothing is thrown away yet: a reload that fails must leave the sheet exactly as
+        // it was.  Each arm below clears the undo history only once it has rows to put in
+        // place of the old ones.  The sort order and the search are kept — both resolve
+        // by column name, and reloading is not a request to forget what you were looking
+        // for.
+        let saved_row = self.stack.active().table_state.selected().unwrap_or(0);
 
         if is_dir {
             match crate::data::io::load_directory(&path) {
                 Ok(df) => {
                     let row_count = df.visible_row_count();
                     let s = self.stack.active_mut();
+                    s.undo_stack.clear();
+                    s.redo_stack.clear();
                     s.dataframe = df;
                     s.dataframe.calc_widths(40, 1000);
+                    s.reapply_sort();
                     let vis = s.dataframe.visible_row_count();
                     s.scroll_state = ScrollbarState::new(vis.saturating_sub(1));
                     let clamped = saved_row.min(vis.saturating_sub(1));
@@ -445,6 +539,8 @@ impl App {
         } else if file_size > 10 * 1024 * 1024 {
             {
                 let s = self.stack.active_mut();
+                s.undo_stack.clear();
+                s.redo_stack.clear();
                 s.dataframe = DataFrame::empty();
                 s.source_path = Some(path.clone());
                 s.source_delimiter = source_delimiter;
@@ -457,12 +553,15 @@ impl App {
                 Ok((df, doc)) => {
                     let row_count = df.visible_row_count();
                     let s = self.stack.active_mut();
+                    s.undo_stack.clear();
+                    s.redo_stack.clear();
                     s.dataframe = df;
                     // The tree must be replaced too: keeping the old one would leave
                     // row paths pointing into a document that no longer matches the
                     // table, and a later save would write the pre-reload contents.
                     s.doc = doc;
                     s.dataframe.calc_widths(40, 1000);
+                    s.reapply_sort();
                     let vis = s.dataframe.visible_row_count();
                     s.scroll_state = ScrollbarState::new(vis.saturating_sub(1));
                     let clamped = saved_row.min(vis.saturating_sub(1));
@@ -1089,7 +1188,7 @@ impl App {
     fn apply_search(&mut self) {
         let s = self.stack.active_mut();
         let pattern = s.search_input.as_str().to_string();
-        let col = s.search_col.unwrap_or(s.cursor_col);
+        let col = s.search_col();
         s.search_input.clear();
 
         // Validate regex first
@@ -1136,7 +1235,7 @@ impl App {
                 return;
             }
         };
-        let col = s.search_col.unwrap_or(s.cursor_col);
+        let col = s.search_col();
         if s.dataframe.visible_row_count() == 0 {
             return;
         }
@@ -1167,7 +1266,7 @@ impl App {
                 return;
             }
         };
-        let col = s.search_col.unwrap_or(s.cursor_col);
+        let col = s.search_col();
         if s.dataframe.visible_row_count() == 0 {
             return;
         }
@@ -1721,18 +1820,17 @@ impl App {
                 > = if forced.is_some() {
                     crate::data::io::load_file_as(&target_path, None, forced)
                         .map(|(df, doc)| (df, doc, None, None, None))
-                } else if target_ext == "db" {
-                    match crate::data::io::load_sqlite_overview(&target_path) {
-                        Ok(df) => Ok((df, None, Some(target_path.clone()), None, None)),
-                        Err(_) => crate::data::io::load_duckdb_overview(&target_path)
-                            .map(|df| (df, None, None, Some(target_path.clone()), None)),
+                } else if crate::data::io::db_write::is_db_ext(&target_path) {
+                    match crate::data::io::db_write::kind_for_path(&target_path) {
+                        crate::data::io::db_write::DbKind::Sqlite => {
+                            crate::data::io::load_sqlite_overview(&target_path)
+                                .map(|df| (df, None, Some(target_path.clone()), None, None))
+                        }
+                        crate::data::io::db_write::DbKind::DuckDb => {
+                            crate::data::io::load_duckdb_overview(&target_path)
+                                .map(|df| (df, None, None, Some(target_path.clone()), None))
+                        }
                     }
-                } else if matches!(target_ext.as_str(), "sqlite" | "sqlite3") {
-                    crate::data::io::load_sqlite_overview(&target_path)
-                        .map(|df| (df, None, Some(target_path.clone()), None, None))
-                } else if matches!(target_ext.as_str(), "duckdb" | "ddb") {
-                    crate::data::io::load_duckdb_overview(&target_path)
-                        .map(|df| (df, None, None, Some(target_path.clone()), None))
                 } else if matches!(target_ext.as_str(), "xlsx" | "xls" | "xlsm" | "xlsb") {
                     match crate::data::io::excel_sheet_names(&target_path) {
                         Ok(names) if names.len() > 1 => {
@@ -1800,14 +1898,19 @@ impl App {
             return;
         }
 
-        match crate::data::io::load_sqlite_table_by_name(&db_path, &table_name) {
-            Ok(new_df) => {
+        match crate::data::io::load_sqlite_table_full(&db_path, &table_name) {
+            Ok((new_df, source)) => {
                 let row_count = new_df.visible_row_count();
                 let mut new_sheet = crate::sheet::Sheet::new(
                     format!("{} :: {}", db_path.display(), table_name),
                     new_df,
                 );
                 new_sheet.sqlite_source_path = Some(db_path.clone());
+                // Without this the save dialog falls back to the title and offers
+                // "/x/db.sqlite :: users" as the filename, which has no usable
+                // extension and fails every time.
+                new_sheet.source_path = Some(db_path.clone());
+                new_sheet.table_source = source;
                 self.stack.push(new_sheet);
                 self.status_message = format!("Opened table '{}' ({} rows)", table_name, row_count);
             }
@@ -2051,14 +2154,17 @@ impl App {
             return;
         }
 
-        match crate::data::io::load_duckdb_table_by_name(&db_path, &table_name) {
-            Ok(new_df) => {
+        match crate::data::io::load_duckdb_table_full(&db_path, &table_name) {
+            Ok((new_df, source)) => {
                 let row_count = new_df.visible_row_count();
                 let mut new_sheet = crate::sheet::Sheet::new(
                     format!("{} :: {}", db_path.display(), table_name),
                     new_df,
                 );
                 new_sheet.duckdb_source_path = Some(db_path.clone());
+                // See open_sqlite_table_row: the save dialog needs a real path.
+                new_sheet.source_path = Some(db_path.clone());
+                new_sheet.table_source = source;
                 self.stack.push(new_sheet);
                 self.status_message = format!("Opened table '{}' ({} rows)", table_name, row_count);
             }
@@ -2100,6 +2206,8 @@ impl App {
                     new_df,
                 );
                 new_sheet.xlsx_source_path = Some(xlsx_path.clone());
+                // See open_sqlite_table_row: the save dialog needs a real path.
+                new_sheet.source_path = Some(xlsx_path.clone());
                 self.stack.push(new_sheet);
                 self.status_message = format!("Opened sheet '{}' ({} rows)", sheet_name, row_count);
             }
@@ -2183,8 +2291,13 @@ impl App {
 
             let vals_str = key_values.join(", ");
             let cols_str = key_cols.join(", ");
-            let sheet =
+            let mut sheet =
                 crate::sheet::Sheet::new(format!("Filter: {} = {}", cols_str, vals_str), parent_df);
+            // From the *parent*, which is whose frame was cloned — the frequency or
+            // pivot sheet in between has no table behind it.
+            if let Some(parent) = self.stack.parent() {
+                sheet.inherit_db_origin(parent);
+            }
             self.stack.push(sheet);
             self.status_message = format!("Drilled down into {} = {}", cols_str, vals_str);
         }
@@ -2276,8 +2389,13 @@ impl App {
 
             let vals_str = key_values.join(", ");
             let cols_str = key_cols.join(", ");
-            let sheet =
+            let mut sheet =
                 crate::sheet::Sheet::new(format!("Filter: {} = {}", cols_str, vals_str), parent_df);
+            // From the *parent*, which is whose frame was cloned — the frequency or
+            // pivot sheet in between has no table behind it.
+            if let Some(parent) = self.stack.parent() {
+                sheet.inherit_db_origin(parent);
+            }
             self.stack.push(sheet);
             self.status_message = format!("Drilled down into {} = {}", cols_str, vals_str);
         }
@@ -2731,7 +2849,7 @@ pub const OPEN_AS_FORMATS: [crate::data::doc::Format; 4] = [
 ];
 
 /// Expand a leading `~` to the user's home directory.
-fn expand_tilde(input: &str) -> std::path::PathBuf {
+pub fn expand_tilde(input: &str) -> std::path::PathBuf {
     if let Some(rest) = input.strip_prefix("~/") {
         if let Ok(home) = std::env::var("HOME") {
             return std::path::PathBuf::from(home).join(rest);

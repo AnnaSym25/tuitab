@@ -311,7 +311,7 @@ fn parse_predicate(item: &Value) -> Result<Predicate, String> {
 /// Entries are joined with AND, predicates inside an `any_of` with OR — one
 /// level of nesting, which covers `(a OR b) AND c` and stops short of being a
 /// query language.
-fn parse_predicates(value: &Value) -> Result<Vec<Clause>, String> {
+pub fn parse_predicates(value: &Value) -> Result<Vec<Clause>, String> {
     // A lone predicate object is accepted as a one-element list.
     let items: Vec<&Value> = match value {
         Value::Array(a) => a.iter().collect(),

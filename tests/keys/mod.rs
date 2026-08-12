@@ -36,6 +36,7 @@ pub fn press(app: &mut App, keys: &str) {
 }
 
 /// Open a fixture and put the cursor on a named column.
+#[allow(dead_code)] // not every test file in this suite opens a fixture this way
 pub fn open(path: &str, cursor_column: &str) -> App {
     let mut app = App::new_as(std::path::Path::new(path), None, None).unwrap();
     let idx = app

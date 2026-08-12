@@ -79,6 +79,7 @@ mod tests {
             modified: false,
             aggregates_cache: None,
             transposed: false,
+            db_rows: None,
         }
     }
 
@@ -236,6 +237,7 @@ mod tests {
             modified: false,
             aggregates_cache: None,
             transposed: false,
+            db_rows: None,
         };
 
         let n = tdf.col_split(0, "/").unwrap();
@@ -301,6 +303,7 @@ mod tests {
             modified: false,
             aggregates_cache: None,
             transposed: false,
+            db_rows: None,
         };
 
         let n = tdf.col_split(0, "/").unwrap();
@@ -351,6 +354,7 @@ mod tests {
             modified: false,
             aggregates_cache: None,
             transposed: false,
+            db_rows: None,
         };
 
         assert_eq!(tdf.format_display(0, 0), "0 B");

@@ -86,33 +86,78 @@ impl Source {
     }
 }
 
-/// The single cached source.  See [`crate::mcp::Server::cache`] for why one.
+/// How many frames the server keeps.  Enough for a comparison between two files and
+/// the odd lookup beside it; small enough that the memory is bounded by what a handful
+/// of reads cost.
+const CACHE_ENTRIES: usize = 4;
+
+/// One cached source.  See [`crate::mcp::Server::cache`].
 pub struct Cached {
     source: Source,
-    mtime: Option<SystemTime>,
+    stamp: Stamp,
     df: DataFrame,
 }
 
-fn mtime_of(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).ok().and_then(|m| m.modified().ok())
+/// What is compared to decide whether a file is still the file that was read.
+///
+/// Not just the modification time of the path: both engines commit through a
+/// write-ahead log beside the database, and a commit by another process lands there
+/// without touching the main file until a checkpoint.  A cache keyed on the main file
+/// alone would keep answering with pre-commit rows indefinitely.  Size goes in too — it
+/// costs nothing and catches a same-second rewrite.
+type Stamp = Vec<(Option<SystemTime>, Option<u64>)>;
+
+fn stamp_of(path: &Path) -> Stamp {
+    let one = |p: &Path| match std::fs::metadata(p) {
+        Ok(m) => (m.modified().ok(), Some(m.len())),
+        Err(_) => (None, None),
+    };
+    let name = path.to_string_lossy();
+    let mut out = vec![one(path)];
+    for extra in [
+        format!("{}-wal", name),
+        format!("{}.wal", name),
+        format!("{}-shm", name),
+    ] {
+        out.push(one(Path::new(&extra)));
+    }
+    out
 }
 
 /// Load `source`, reusing the cached frame when the file has not changed.
 pub fn load(server: &mut super::Server, source: &Source) -> Result<DataFrame, String> {
-    let mtime = mtime_of(&source.path);
+    let stamp = stamp_of(&source.path);
+    // A file whose metadata cannot be read is a miss, not a match: two unreadable
+    // stamps are equal to each other and say nothing about the contents.
+    let readable = stamp[0].0.is_some();
 
-    if let Some(cached) = &server.cache {
-        if cached.source == *source && cached.mtime == mtime {
-            return Ok(cached.df.clone());
+    if readable {
+        if let Some(i) = server
+            .cache
+            .iter()
+            .position(|c| c.source == *source && c.stamp == stamp)
+        {
+            // To the front, so the entry that keeps being asked for is the last to go.
+            let hit = server.cache.remove(i);
+            let df = hit.df.clone();
+            server.cache.insert(0, hit);
+            return Ok(df);
         }
     }
 
     let df = load_once(source)?;
-    server.cache = Some(Cached {
-        source: source.clone(),
-        mtime,
-        df: df.clone(),
-    });
+    // A stale entry for the same source would otherwise sit behind the new one and
+    // never be reached, holding a frame nobody can get to.
+    server.cache.retain(|c| c.source != *source);
+    server.cache.insert(
+        0,
+        Cached {
+            source: source.clone(),
+            stamp,
+            df: df.clone(),
+        },
+    );
+    server.cache.truncate(CACHE_ENTRIES);
     Ok(df)
 }
 
@@ -129,45 +174,105 @@ pub fn load_once(source: &Source) -> Result<DataFrame, String> {
         return load_container(&source.path, &ext, container);
     }
 
-    // An explicit csv/tsv format has no route through `load_file_as`, whose
-    // `forced` parameter only covers the document formats.
-    if matches!(ext.as_str(), "csv" | "tsv") && source.format.is_some() {
-        return crate::data::loader::load_csv(&source.path, source.delimiter)
-            .map_err(|e| e.to_string());
+    // A database with no container is a listing, not data.  Refusing here rather than
+    // in each tool covers `query`, `describe` and the right-hand side of `join` at once,
+    // and stops a fall-through that handed back raw CREATE statements as rows while the
+    // instructions said there was no SQL anywhere.
+    if crate::data::io::db_write::is_db_name(&ext) {
+        let n = io::db_containers(&source.path)
+            .map(|c| c.len())
+            .unwrap_or(0);
+        return Err(format!(
+            "'{}' holds {} tables and views; pass 'container' to pick one. \
+             tuitab_inspect lists them.",
+            source.path.display(),
+            n
+        ));
+    }
+
+    // `load_file_as`'s `forced` parameter only covers the document formats, so a
+    // declared tabular format used to be accepted and then ignored — `.csv` read as
+    // 'parquet' quietly came back as CSV.  Send those through the reader by name.
+    if let Some(declared) = source.format.as_deref() {
+        if Format::from_name(declared).is_none() {
+            return io::load_tabular(&source.path, source.delimiter, &ext).map_err(|e| {
+                format!("Could not read {} as {}: {}", source.path.display(), ext, e)
+            });
+        }
     }
 
     let forced = source.format.as_deref().and_then(Format::from_name);
     io::load_file_as(&source.path, source.delimiter, forced)
         .map(|(df, _)| df)
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("Could not read {}: {}", source.path.display(), e))
+}
+
+/// Load a database table or view, keeping the source that describes it.
+///
+/// The declared types, keys and defaults ride on that source; dropping it — which is
+/// what reading through the plain loader does — is why a model used to see every
+/// database column as a guess made over text.
+pub fn load_db_table(
+    path: &Path,
+    container: &str,
+) -> Result<(DataFrame, Option<io::db_write::TableSource>), String> {
+    // The engine comes from the file's header, not from its extension — `.db` names
+    // neither engine, and the other extensions are a claim the file itself can settle.
+    match crate::data::io::db_write::kind_for_path(path) {
+        crate::data::io::db_write::DbKind::DuckDb => io::load_duckdb_table_full(path, container),
+        crate::data::io::db_write::DbKind::Sqlite => io::load_sqlite_table_full(path, container),
+    }
+    .map_err(|e| {
+        format!(
+            "Could not read '{}' from {}: {}",
+            container,
+            path.display(),
+            e
+        )
+    })
 }
 
 fn load_container(path: &Path, ext: &str, container: &str) -> Result<DataFrame, String> {
+    if crate::data::io::db_write::is_db_ext(path) {
+        return load_db_table(path, container).map(|(df, _)| df);
+    }
     match ext {
-        "xlsx" | "xls" => io::load_excel_sheet_by_name(path, container),
-        "sqlite" | "sqlite3" => io::load_sqlite_table_by_name(path, container),
-        "duckdb" | "ddb" => io::load_duckdb_table_by_name(path, container),
-        "db" => io::load_sqlite_table_by_name(path, container)
-            .or_else(|_| io::load_duckdb_table_by_name(path, container)),
-        other => Err(color_eyre::eyre::eyre!(
+        "xlsx" | "xls" => io::load_excel_sheet_by_name(path, container).map_err(|e| {
+            format!(
+                "Could not read sheet '{}' from {}: {}",
+                container,
+                path.display(),
+                e
+            )
+        }),
+        other => Err(format!(
             "'.{}' files hold a single table — drop 'container'",
             other
         )),
     }
-    .map_err(|e| e.to_string())
 }
 
-/// List the tables or sheets a file holds, or `None` when the format holds one
-/// unnamed table.
-pub fn containers(path: &Path, ext: &str) -> Option<Vec<String>> {
+/// What a file holds, or `None` when the format holds one unnamed table.
+///
+/// Databases answer with their tables *and* views, each carrying what the catalogue
+/// knows; a spreadsheet has nothing beyond a name to say.
+pub fn containers(path: &Path, ext: &str) -> Option<Vec<io::ContainerInfo>> {
+    if crate::data::io::db_write::is_db_ext(path) {
+        return io::db_containers(path).ok().filter(|c| !c.is_empty());
+    }
     match ext {
-        "xlsx" | "xls" => io::excel_sheet_names(path).ok(),
-        "sqlite" | "sqlite3" => io::sqlite_table_names(path).ok(),
-        "duckdb" | "ddb" => io::duckdb_table_names(path).ok(),
-        "db" => io::sqlite_table_names(path)
-            .ok()
-            .filter(|n| !n.is_empty())
-            .or_else(|| io::duckdb_table_names(path).ok()),
+        "xlsx" | "xls" => io::excel_sheet_names(path).ok().map(|names| {
+            names
+                .into_iter()
+                .map(|name| io::ContainerInfo {
+                    name,
+                    view: false,
+                    rows: None,
+                    columns: 0,
+                    sql: None,
+                })
+                .collect()
+        }),
         _ => None,
     }
 }
@@ -192,5 +297,6 @@ pub fn load_doc(source: &Source) -> Result<Doc, String> {
             }
         )
     })?;
-    Doc::load(&source.path, format).map_err(|e| e.to_string())
+    Doc::load(&source.path, format)
+        .map_err(|e| format!("Could not read {}: {}", source.path.display(), e))
 }

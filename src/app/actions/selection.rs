@@ -76,18 +76,26 @@ impl App {
                 }
                 None
             }
+            Action::AddRowBelow => {
+                self.add_empty_row(true);
+                None
+            }
+            Action::AddRowAbove => {
+                self.add_empty_row(false);
+                None
+            }
             Action::TogglePinColumn => {
                 let s = self.stack.active_mut();
                 s.push_undo();
                 let col = s.cursor_col;
-                if let Ok(new_col) = s.dataframe.toggle_pin_column(col) {
-                    s.cursor_col = new_col;
-                    s.table_state.select_column(Some(new_col));
-                    let pinned = s.dataframe.columns[new_col].pinned;
-                    self.status_message = if pinned {
-                        format!("Pinned column '{}'", s.dataframe.columns[new_col].name)
+                // The column does not move, so neither does the cursor — it stays on
+                // the same data, which now happens to be drawn in the pinned block.
+                if s.dataframe.toggle_pin_column(col).is_ok() {
+                    let meta = &s.dataframe.columns[col];
+                    self.status_message = if meta.pinned {
+                        format!("Pinned column '{}'", meta.name)
                     } else {
-                        format!("Unpinned column '{}'", s.dataframe.columns[new_col].name)
+                        format!("Unpinned column '{}'", meta.name)
                     };
                 }
                 None
@@ -227,6 +235,39 @@ impl App {
         self.mode = AppMode::Normal;
     }
 
+    /// Put an empty row under (`o`) or over (`O`) the cursor and land on it, as vim does.
+    ///
+    /// This is the other half of building a table from nothing: `zi` gives it columns,
+    /// this gives it rows.  The new row carries no database identity, so saving turns it
+    /// into an INSERT.
+    pub(super) fn add_empty_row(&mut self, below: bool) {
+        if self.reject_on_doc_sheet("Adding a row") {
+            return;
+        }
+        if self.stack.active().is_dir_sheet {
+            self.status_message = "This is a directory listing".to_string();
+            return;
+        }
+
+        let s = self.stack.active_mut();
+        s.push_undo();
+        let at = s.table_state.selected().unwrap_or(0) + usize::from(below);
+        match s.dataframe.insert_empty_row(at) {
+            Ok(()) => {
+                let at = at.min(s.dataframe.visible_row_count().saturating_sub(1));
+                let vis = s.dataframe.visible_row_count();
+                s.scroll_state = ScrollbarState::new(vis.saturating_sub(1));
+                s.table_state.select(Some(at));
+                self.status_message = "Added a row".to_string();
+            }
+            Err(_) => {
+                s.pop_undo();
+                s.redo_stack.pop();
+                self.status_message = "Add a column first with 'zi'".to_string();
+            }
+        }
+    }
+
     pub(super) fn delete_selected_rows(&mut self) {
         let s = self.stack.active_mut();
         let count = s.dataframe.selected_rows.len();
@@ -269,6 +310,8 @@ impl App {
             return;
         }
 
+        let removed: Vec<usize> = s.dataframe.selected_rows.iter().copied().collect();
+        s.dataframe.record_deleted_rows(removed);
         std::sync::Arc::make_mut(&mut s.dataframe.row_order)
             .retain(|idx| !s.dataframe.selected_rows.contains(idx));
         std::sync::Arc::make_mut(&mut s.dataframe.original_order)
@@ -482,6 +525,17 @@ impl App {
         match crate::data::dedup::deduplicate(&s.dataframe, key_cols, keep) {
             Ok(survivors) => {
                 s.push_undo();
+                // Dedup drops rows for good, exactly like `d` does — the sheet is the
+                // statement of intent, and the SQL popup is where it gets confirmed.
+                let kept: std::collections::HashSet<usize> = survivors.iter().copied().collect();
+                let dropped: Vec<usize> = s
+                    .dataframe
+                    .original_order
+                    .iter()
+                    .copied()
+                    .filter(|i| !kept.contains(i))
+                    .collect();
+                s.dataframe.record_deleted_rows(dropped);
                 s.dataframe.row_order = survivors.into();
                 s.dataframe.original_order = s.dataframe.row_order.clone();
                 s.dataframe.selected_rows.clear();

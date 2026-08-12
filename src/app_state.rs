@@ -19,6 +19,30 @@ pub struct SaveState {
     pub shape: crate::data::io::doc_io::Shape,
     /// Target path, held while the shape popup is up.
     pub pending_path: Option<std::path::PathBuf>,
+    /// Name being typed for the table a database export will create.
+    pub table_input: TextInput,
+    /// The answered table name, parked exactly like `pending_path` so re-entering
+    /// `ApplySave` does not ask a second time.
+    pub table_name: Option<String>,
+}
+
+/// The SQL confirmation popup: what is about to run, and where.
+#[derive(Default)]
+pub struct SqlConfirmState {
+    pub plan: Option<crate::data::io::db_write::WritePlan>,
+    /// First visible line of the statement list.
+    pub scroll: usize,
+    /// Largest useful [`Self::scroll`], recorded by the renderer because only it knows
+    /// the terminal size and how many lines the statements wrapped to.  One frame
+    /// behind after a resize, which no one can type fast enough to notice.
+    pub max_scroll: std::cell::Cell<usize>,
+    /// The table a create-plan is about to make.  `apply_sql_plan` reads this when the
+    /// sheet has no `table_source` of its own — which is the whole point of creating one.
+    pub pending_source: Option<crate::data::io::db_write::TableSource>,
+    /// Target database, parked while the popup is up.  Deliberately not
+    /// [`SaveState::pending_path`]: sharing that field would let a stale value reach the
+    /// shape popup.
+    pub path: Option<std::path::PathBuf>,
 }
 
 #[derive(Default)]

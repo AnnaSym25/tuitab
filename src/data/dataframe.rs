@@ -34,7 +34,27 @@ pub struct DataFrame {
     /// one.
     #[serde(default)]
     pub transposed: bool,
+    /// Row identity in the SQLite/DuckDB table this frame was read from, when it came
+    /// from one.
+    ///
+    /// `None` means the frame cannot be written back, and that is the default — every
+    /// operation that renumbers rows (window column, transpose, pivot, join, group-by,
+    /// describe, document reprojection) is born through [`DataFrame::from_parts`] and
+    /// so drops it without having to remember to.
+    #[serde(default)]
+    pub db_rows: Option<crate::data::io::db_write::DbRows>,
 }
+
+/// What a user types to mean SQL NULL rather than an empty string.
+///
+/// The two are different values in a database, and there has to be *some* way to type
+/// the difference — an emptied cell is `''`, this is NULL.  Borrowed from the `\N` that
+/// MySQL and PostgreSQL already use in their text dumps.
+///
+/// Only frames that came from a database read it as a sentinel.  A JSON sheet writes
+/// its edits into the document tree first, which would store the two characters
+/// literally while the table showed NULL — and in a CSV there is no null to mean.
+pub const NULL_INPUT: &str = "\\N";
 
 /// Build an ASCII block-character histogram bar for a frequency table cell.
 /// Uses Unicode block elements (▏▎▍▌▋▊▉█) for sub-character precision.
@@ -70,6 +90,7 @@ impl DataFrame {
             modified: false,
             aggregates_cache: None,
             transposed: false,
+            db_rows: None,
         }
     }
 
@@ -105,6 +126,7 @@ impl DataFrame {
             modified: false,
             aggregates_cache: None,
             transposed: false,
+            db_rows: None,
         }
     }
 
@@ -206,6 +228,31 @@ impl DataFrame {
             Self::anyvalue_to_string(&any_val)
         } else {
             String::new()
+        }
+    }
+
+    /// True when the cell holds SQL NULL rather than a value.
+    pub fn is_null_physical(&self, physical_row: usize, col: usize) -> bool {
+        if col >= self.df.width() || physical_row >= self.df.height() {
+            return false;
+        }
+        matches!(
+            self.df.columns()[col].get(physical_row),
+            Ok(AnyValue::Null) | Err(_)
+        )
+    }
+
+    /// The cell as an editor should show it: [`NULL_INPUT`] for NULL.
+    ///
+    /// Opening a null cell and pressing Enter unchanged has to leave it null; without
+    /// this it would show empty and write back an empty string, which is a different
+    /// value in a database.  Offered only where the sentinel is read back, so it never
+    /// puts two characters in front of a user who cannot type them away.
+    pub fn get_editable(&self, physical_row: usize, col: usize) -> String {
+        if self.db_rows.is_some() && self.is_null_physical(physical_row, col) {
+            NULL_INPUT.to_string()
+        } else {
+            self.get_physical(physical_row, col)
         }
     }
 
@@ -346,40 +393,31 @@ impl DataFrame {
 
         let mut parsed_val = value.clone();
         if col < self.columns.len() {
-            match self.columns[col].col_type {
-                ColumnType::Percentage => {
-                    let s = parsed_val.trim().replace('%', "");
-                    if let Ok(f) = s.parse::<f64>() {
-                        parsed_val = (f / 100.0).to_string();
-                    }
-                }
-                ColumnType::Currency => {
-                    let s = parsed_val.trim();
-                    // Dirty float parsing: keep only digits, '.', and '-'
-                    let cleaned: String = s
-                        .chars()
-                        .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
-                        .collect();
-                    if let Ok(f) = cleaned.parse::<f64>() {
-                        parsed_val = f.to_string();
-                    }
-                }
-                _ => {}
+            if let Some(v) = parse_typed_input(&parsed_val, self.columns[col].col_type) {
+                parsed_val = v;
             }
         }
 
         let mut builder =
             polars::prelude::StringChunkedBuilder::new(series_name.clone(), str_ca.len());
+        let write_null = value == NULL_INPUT && self.db_rows.is_some();
         for (i, opt_s) in str_ca.into_iter().enumerate() {
             if i == physical_row {
-                builder.append_value(&parsed_val);
+                if write_null {
+                    builder.append_null();
+                } else {
+                    builder.append_value(&parsed_val);
+                }
             } else {
                 builder.append_option(opt_s);
             }
         }
 
         let new_series = builder.finish().into_series();
-        let final_series = new_series.cast(series.dtype()).unwrap_or(new_series);
+        // Strict: a plain `cast` turns a value the column cannot hold into a silent
+        // NULL, which loses what the user typed.  Failing keeps the column as text,
+        // holding the value they can see — and a save then refuses it by name.
+        let final_series = new_series.strict_cast(series.dtype()).unwrap_or(new_series);
         self.df
             .with_column(final_series.into())
             .map_err(|e| e.to_string())?;
@@ -409,32 +447,21 @@ impl DataFrame {
 
         let mut parsed_val = value;
         if col < self.columns.len() {
-            match self.columns[col].col_type {
-                ColumnType::Percentage => {
-                    let s = parsed_val.trim().replace('%', "");
-                    if let Ok(f) = s.parse::<f64>() {
-                        parsed_val = (f / 100.0).to_string();
-                    }
-                }
-                ColumnType::Currency => {
-                    let cleaned: String = parsed_val
-                        .trim()
-                        .chars()
-                        .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
-                        .collect();
-                    if let Ok(f) = cleaned.parse::<f64>() {
-                        parsed_val = f.to_string();
-                    }
-                }
-                _ => {}
+            if let Some(v) = parse_typed_input(&parsed_val, self.columns[col].col_type) {
+                parsed_val = v;
             }
         }
 
         let mut builder = polars::prelude::StringChunkedBuilder::new(series_name, str_ca.len());
+        let write_null = parsed_val == NULL_INPUT && self.db_rows.is_some();
         let mut updated = 0usize;
         for (i, opt_s) in str_ca.into_iter().enumerate() {
             if physical_rows.contains(&i) {
-                builder.append_value(&parsed_val);
+                if write_null {
+                    builder.append_null();
+                } else {
+                    builder.append_value(&parsed_val);
+                }
                 updated += 1;
             } else {
                 builder.append_option(opt_s);
@@ -442,13 +469,87 @@ impl DataFrame {
         }
 
         let new_series = builder.finish().into_series();
-        let final_series = new_series.cast(series.dtype()).unwrap_or(new_series);
+        // Strict: a plain `cast` turns a value the column cannot hold into a silent
+        // NULL, which loses what the user typed.  Failing keeps the column as text,
+        // holding the value they can see — and a save then refuses it by name.
+        let final_series = new_series.strict_cast(series.dtype()).unwrap_or(new_series);
         self.df
             .with_column(final_series.into())
             .map_err(|e| e.to_string())?;
         self.modified = true;
         self.aggregates_cache = None;
         Ok(updated)
+    }
+
+    /// Note the database rows that `removed` (physical indices) takes out of the sheet,
+    /// so that a later writeback can DELETE them.
+    ///
+    /// Removing rows only shrinks `row_order`/`original_order`, which is exactly what a
+    /// drill-down filter does to them as well — after the fact the two are
+    /// indistinguishable.  So what leaves has to be written down as it leaves.  A no-op
+    /// on frames that did not come from a database.
+    pub fn record_deleted_rows(&mut self, removed: impl IntoIterator<Item = usize>) {
+        let Some(db) = self.db_rows.as_ref() else {
+            return;
+        };
+        let ids: Vec<i64> = removed
+            .into_iter()
+            .filter_map(|i| db.ids.get(i).copied().flatten())
+            .collect();
+        if let Some(db) = self.db_rows.as_mut() {
+            db.deleted.extend(ids);
+        }
+    }
+
+    /// Add one empty row, physically at the end and visually at `display_at`.
+    ///
+    /// The cells are nulls *of each column's own dtype*, not empty strings: the columns
+    /// may be Int64 or Float64 from any CSV or Parquet load, and a text series would not
+    /// stack onto them.  Nulls are also the honest value for a cell nobody has filled in
+    /// — they reach a database as NULL rather than as `''`.
+    pub fn insert_empty_row(&mut self, display_at: usize) -> Result<(), String> {
+        if self.columns.is_empty() {
+            return Err("the sheet has no columns".into());
+        }
+        let one: Vec<polars::prelude::Column> = self
+            .df
+            .columns()
+            .iter()
+            .map(|c| polars::prelude::Series::full_null(c.name().clone(), 1, c.dtype()).into())
+            .collect();
+        let one = polars::prelude::DataFrame::new(1, one).map_err(|e| e.to_string())?;
+
+        let phys = self.df.height();
+        self.df.vstack_mut(&one).map_err(|e| e.to_string())?;
+
+        let at = display_at.min(self.row_order.len());
+        Arc::make_mut(&mut self.row_order).insert(at, phys);
+        // The load order learns the position too, or resetting the sort would send a row
+        // just added in the middle down to the bottom.  "The same place" means after
+        // whatever it now follows on screen — the two orders share no index, only rows.
+        let orig_at = match at.checked_sub(1) {
+            None => 0,
+            Some(prev) => {
+                let above = self.row_order[prev];
+                self.original_order
+                    .iter()
+                    .position(|p| *p == above)
+                    .map_or(self.original_order.len(), |i| i + 1)
+            }
+        };
+        Arc::make_mut(&mut self.original_order).insert(orig_at, phys);
+        self.record_added_rows(1);
+        self.modified = true;
+        self.aggregates_cache = None;
+        Ok(())
+    }
+
+    /// Note that `count` rows were appended to the frame and have no database row yet,
+    /// so a later writeback INSERTs them.
+    pub fn record_added_rows(&mut self, count: usize) {
+        if let Some(db) = self.db_rows.as_mut() {
+            db.ids.extend(std::iter::repeat_n(None, count));
+        }
     }
 
     /// Number of rows currently visible (after any active filter).
@@ -768,64 +869,18 @@ impl DataFrame {
 
     /// Pin or unpin column `col_idx`.
     ///
-    /// Pinned columns are physically moved to the front of the frame (just after
-    /// any already-pinned columns).  Unpinned columns are moved to the end of
-    /// the pinned block.  Returns the new physical index of the column.
-    pub fn toggle_pin_column(&mut self, col_idx: usize) -> Result<usize, String> {
-        if col_idx >= self.columns.len() {
-            return Err("Out of bounds".into());
-        }
-
-        let is_pinned = self.columns[col_idx].pinned;
-        self.columns[col_idx].pinned = !is_pinned;
-
-        let target_idx = if !is_pinned {
-            // Pinning: remember position among unpinned columns, then move after pinned block
-            let restore_pos = (0..col_idx).filter(|&i| !self.columns[i].pinned).count();
-            self.columns[col_idx].pin_restore_pos = Some(restore_pos);
-
-            let mut insert_pos = 0;
-            for i in 0..self.columns.len() {
-                if i == col_idx {
-                    continue;
-                }
-                if self.columns[i].pinned {
-                    insert_pos += 1;
-                } else {
-                    break;
-                }
-            }
-            insert_pos
-        } else {
-            // Unpinning: restore to saved position among unpinned columns
-            let num_pinned: usize = (0..self.columns.len())
-                .filter(|&i| i != col_idx && self.columns[i].pinned)
-                .count();
-            let num_unpinned: usize = (0..self.columns.len())
-                .filter(|&i| i != col_idx && !self.columns[i].pinned)
-                .count();
-            let restore_pos = self.columns[col_idx]
-                .pin_restore_pos
-                .unwrap_or(num_unpinned)
-                .min(num_unpinned);
-            self.columns[col_idx].pin_restore_pos = None;
-            num_pinned + restore_pos
-        };
-
-        // Physically move the column to target_idx using swap_columns
-        let mut current = col_idx;
-        if current > target_idx {
-            while current > target_idx {
-                self.swap_columns(current - 1, current)?;
-                current -= 1;
-            }
-        } else if current < target_idx {
-            while current < target_idx {
-                self.swap_columns(current, current + 1)?;
-                current += 1;
-            }
-        }
-        Ok(target_idx)
+    /// Pinning is a view setting and nothing more: the renderer builds its pinned block
+    /// by filtering on this flag ([`crate::ui::table_view`]), so the column does not
+    /// have to move for the user to see it move.  It used to be walked to the front of
+    /// the frame one `swap_columns` at a time, which cost a full `select()` per step,
+    /// could not round-trip with two pins held at once — the saved position was
+    /// captured against a target that the other pin was still moving — and, now that a
+    /// reorder is something a database can be asked to perform, would have turned
+    /// "keep this column in sight" into a schema migration.
+    pub fn toggle_pin_column(&mut self, col_idx: usize) -> Result<(), String> {
+        let meta = self.columns.get_mut(col_idx).ok_or("Out of bounds")?;
+        meta.pinned = !meta.pinned;
+        Ok(())
     }
 
     /// Rename column at `col_idx` to `new_name`.
@@ -954,6 +1009,9 @@ impl DataFrame {
             .with_column(new_series.into())
             .map_err(|e| e.to_string())?;
         self.columns[col_idx].col_type = crate::types::ColumnType::String;
+        // The column is text again, so an earlier deliberate retype no longer describes
+        // it — leaving the tag would plan an ALTER to a type the screen no longer shows.
+        self.columns[col_idx].db_retype = None;
         self.modified = true;
         self.aggregates_cache = None;
         Ok(())
@@ -1940,5 +1998,59 @@ impl DataFrame {
         }
 
         Ok((pivoted, columns))
+    }
+}
+
+/// Turn a value typed or pasted into a percentage/currency column back into the raw
+/// number the frame stores — the inverse of `format_display` for those two types:
+/// `12%` → `0.12`, `$1234.50` → `1234.50`, `($5.00)` → `-5`.  `None` means the column
+/// type needs no translation, or the text is not a number and should be written as-is.
+fn parse_typed_input(value: &str, col_type: ColumnType) -> Option<String> {
+    match col_type {
+        ColumnType::Percentage => value
+            .trim()
+            .replace('%', "")
+            .parse::<f64>()
+            .ok()
+            .map(|f| (f / 100.0).to_string()),
+        ColumnType::Currency => {
+            let s = value.trim();
+            // A negative currency is displayed in parentheses and carries no minus,
+            // so the sign has to be read off the brackets before they are stripped.
+            let bracketed = s.starts_with('(') && s.ends_with(')');
+            // Dirty float parsing: keep only digits, '.', and '-'
+            let cleaned: String = s
+                .chars()
+                .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+                .collect();
+            cleaned
+                .parse::<f64>()
+                .ok()
+                .map(|f| if bracketed { -f.abs() } else { f }.to_string())
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod paste_input_tests {
+    use super::*;
+
+    #[test]
+    fn typed_input_round_trips_displayed_values() {
+        assert_eq!(
+            parse_typed_input("12.5%", ColumnType::Percentage).as_deref(),
+            Some("0.125")
+        );
+        assert_eq!(
+            parse_typed_input("$1234.50", ColumnType::Currency).as_deref(),
+            Some("1234.5")
+        );
+        assert_eq!(
+            parse_typed_input("($5.00)", ColumnType::Currency).as_deref(),
+            Some("-5")
+        );
+        assert_eq!(parse_typed_input("abc", ColumnType::Currency), None);
+        assert_eq!(parse_typed_input("7", ColumnType::Integer), None);
     }
 }

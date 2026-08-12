@@ -20,6 +20,7 @@ pub mod render;
 pub mod rpc;
 pub mod source;
 pub mod tools;
+pub mod write;
 
 use color_eyre::Result;
 use serde_json::{json, Value};
@@ -28,16 +29,35 @@ use std::io::{BufRead, Write};
 /// Server state that outlives a single request.
 #[derive(Default)]
 pub struct Server {
-    /// Last loaded source.  The model's working loop is inspect → query → query
-    /// → describe against one file; without this every call re-reads the
-    /// workbook.  One entry, not an LRU: the only operation needing two files at
-    /// once is `join`, and that loads its right-hand side itself.
-    pub cache: Option<source::Cached>,
+    /// Recently loaded sources, newest first.  The model's working loop is inspect →
+    /// query → query → describe against one file; without this every call re-reads the
+    /// workbook.  A few entries rather than one, because comparing two files means
+    /// alternating between them, and a single slot turns that into a re-read every call.
+    pub cache: Vec<source::Cached>,
+    /// Whether this server may change rows.  Off unless the human who started it
+    /// passed `--mcp-write`; the write tools do not exist otherwise.
+    pub write: bool,
+    /// The one plan waiting to be applied.  A single slot on purpose: entering
+    /// `tuitab_write` clears it whatever happens next, so a plan can never outlive the
+    /// conversation that produced it and be applied in place of a newer one.
+    pub pending: Option<write::Pending>,
+    /// Numbers the plans.  Not a secret — the point of the id is that
+    /// `tuitab_write_apply` runs the plan the model just read and refuses any other, and
+    /// a counter does that as well as a nonce would.
+    pub plan_seq: u64,
 }
 
 impl Server {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A server that is allowed to change rows.
+    pub fn writable() -> Self {
+        Self {
+            write: true,
+            ..Self::default()
+        }
     }
 }
 
@@ -63,9 +83,9 @@ pub fn handle_message(server: &mut Server, line: &str) -> Option<Value> {
     let id = request.id?;
 
     let result: Result<Value, String> = match request.method.as_str() {
-        "initialize" => Ok(initialize_result(&request.params)),
+        "initialize" => Ok(initialize_result(server, &request.params)),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({"tools": tools::definitions()})),
+        "tools/list" => Ok(json!({"tools": tools::definitions(server.write)})),
         "tools/call" => return Some(call_tool(server, id, &request.params)),
         other => {
             return Some(rpc::error(
@@ -82,7 +102,7 @@ pub fn handle_message(server: &mut Server, line: &str) -> Option<Value> {
     }
 }
 
-fn initialize_result(params: &Value) -> Value {
+fn initialize_result(server: &Server, params: &Value) -> Value {
     let requested = params.get("protocolVersion").and_then(Value::as_str);
     json!({
         "protocolVersion": rpc::negotiate_version(requested),
@@ -92,7 +112,7 @@ fn initialize_result(params: &Value) -> Value {
             "title": "tuitab — tabular data engine",
             "version": env!("CARGO_PKG_VERSION"),
         },
-        "instructions": tools::INSTRUCTIONS,
+        "instructions": tools::instructions(server.write),
     })
 }
 
@@ -124,10 +144,14 @@ fn call_tool(server: &mut Server, id: Value, params: &Value) -> Value {
 }
 
 /// Read JSON-RPC messages from stdin until EOF, writing responses to stdout.
-pub fn serve() -> Result<()> {
+pub fn serve(write: bool) -> Result<()> {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
-    let mut server = Server::new();
+    let mut server = if write {
+        Server::writable()
+    } else {
+        Server::new()
+    };
 
     for line in stdin.lock().lines() {
         let line = line?;

@@ -266,13 +266,20 @@ fn inspect_lists_tables_before_showing_columns() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|t| t.as_str().unwrap())
+        .map(|t| t["name"].as_str().unwrap())
         .collect();
     assert_eq!(
         tables,
-        vec!["data"],
-        "save_sqlite writes one table named 'data'"
+        vec!["result"],
+        "the saver names the table after what it was given"
     );
+    // The listing carries what the catalogue knows, not just a name.
+    assert_eq!(listing["containers"][0]["kind"], "table");
+    assert_eq!(listing["containers"][0]["rows"], 20);
+    assert!(listing["containers"][0]["create_sql"]
+        .as_str()
+        .unwrap()
+        .contains("CREATE TABLE"));
     assert!(
         listing.get("columns").is_none(),
         "no columns without a container"
@@ -283,7 +290,7 @@ fn inspect_lists_tables_before_showing_columns() {
     let table = call(
         &mut server,
         "tuitab_inspect",
-        json!({"source": {"path": db.to_string_lossy(), "container": "data"}}),
+        json!({"source": {"path": db.to_string_lossy(), "container": "result"}}),
     );
     assert_eq!(table["row_count"], 20);
 
@@ -291,7 +298,7 @@ fn inspect_lists_tables_before_showing_columns() {
     let result = call(
         &mut server,
         "tuitab_query",
-        json!({"source": {"path": db.to_string_lossy(), "container": "data"},
+        json!({"source": {"path": db.to_string_lossy(), "container": "result"},
                "ops": [{"frequency": {"by": ["department"]}}]}),
     );
     assert_eq!(result["row_count"], 4);
@@ -907,4 +914,1033 @@ fn a_seeded_operation_reports_no_seed_because_none_was_drawn() {
         result.get("seeds").is_none(),
         "nothing was drawn for the caller"
     );
+}
+
+// ── Databases ─────────────────────────────────────────────────────────────────────
+
+/// A table with the things `create_table` cannot declare — a key, NOT NULL, a DEFAULT —
+/// because those are exactly what the metadata tests are about. Plus a view.
+fn db_fixture(name: &str) -> PathBuf {
+    let path = tmp(name);
+    let _ = std::fs::remove_file(&path);
+    let ddl = "CREATE TABLE users (
+                   id INTEGER PRIMARY KEY,
+                   name TEXT NOT NULL,
+                   score INTEGER,
+                   note TEXT,
+                   tier TEXT DEFAULT 'basic');
+               INSERT INTO users VALUES (1, 'ann', 20, NULL, 'basic');
+               INSERT INTO users VALUES (2, 'bob', 1000, '', 'gold');
+               INSERT INTO users VALUES (3, 'cara', 3, 'hi', 'basic');
+               CREATE TABLE other (k TEXT);
+               INSERT INTO other VALUES ('untouched');
+               CREATE VIEW big AS SELECT id, name FROM users WHERE score > 100;";
+    if name.ends_with(".duckdb") {
+        duckdb::Connection::open(&path)
+            .unwrap()
+            .execute_batch(ddl)
+            .unwrap();
+    } else {
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(ddl)
+            .unwrap();
+    }
+    path
+}
+
+fn names_in(path: &PathBuf) -> Vec<String> {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    let mut stmt = conn.prepare("SELECT name FROM users ORDER BY id").unwrap();
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+    rows.map(|r| r.unwrap()).collect()
+}
+
+fn writable_server() -> Server {
+    Server::writable()
+}
+
+#[test]
+fn inspect_reports_declared_types_keys_and_defaults() {
+    let mut server = Server::new();
+    let db = db_fixture("meta.sqlite");
+    let out = call(
+        &mut server,
+        "tuitab_inspect",
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"}}),
+    );
+
+    let cols = out["columns"].as_array().unwrap();
+    assert_eq!(cols[0]["name"], "id");
+    assert_eq!(cols[0]["declared"], "INTEGER");
+    assert_eq!(cols[0]["primary_key"], true);
+    assert_eq!(cols[1]["name"], "name");
+    assert_eq!(cols[1]["not_null"], true);
+    assert_eq!(cols[4]["default"], "'basic'");
+    assert_eq!(out["writable"], true);
+    assert!(out["create_sql"].as_str().unwrap().contains("CREATE TABLE"));
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn inspect_lists_row_counts_and_views() {
+    let mut server = Server::new();
+    let db = db_fixture("listing.sqlite");
+    let out = call(
+        &mut server,
+        "tuitab_inspect",
+        json!({"source": db.to_string_lossy()}),
+    );
+
+    let listed = out["containers"].as_array().unwrap();
+    let users = listed.iter().find(|c| c["name"] == "users").unwrap();
+    assert_eq!(users["kind"], "table");
+    assert_eq!(users["rows"], 3);
+    assert_eq!(users["columns"], 5);
+
+    let view = listed.iter().find(|c| c["name"] == "big").unwrap();
+    assert_eq!(view["kind"], "view");
+    assert_eq!(view["rows"], Value::Null, "a view is not counted");
+    assert!(out["note"].as_str().unwrap().contains("view"));
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn a_view_reads_but_is_not_writable() {
+    let mut server = Server::new();
+    let db = db_fixture("view.sqlite");
+    let out = call(
+        &mut server,
+        "tuitab_inspect",
+        json!({"source": {"path": db.to_string_lossy(), "container": "big"}}),
+    );
+    assert_eq!(out["row_count"], 1, "the view reads");
+    assert_eq!(out["writable"], false);
+    assert!(out["note"].as_str().unwrap().contains("view"));
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn a_database_without_a_container_points_at_container() {
+    let mut server = Server::new();
+    let db = db_fixture("nocontainer.sqlite");
+    let message = call_expecting_failure(
+        &mut server,
+        "tuitab_query",
+        json!({"source": db.to_string_lossy(), "ops": []}),
+    );
+    assert!(message.contains("pass 'container'"), "{}", message);
+    assert!(message.contains("tuitab_inspect"), "{}", message);
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn a_numeric_filter_over_a_database_compares_numerically() {
+    let mut server = Server::new();
+    let db = db_fixture("numeric.sqlite");
+    let out = call(
+        &mut server,
+        "tuitab_query",
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "ops": [{"filter": [{"col": "score", "op": "gt", "value": 100}]}]}),
+    );
+    // Lexically "20" and "3" both beat "100"; numerically only 1000 does.
+    assert_eq!(out["row_count"], 1);
+    std::fs::remove_file(&db).unwrap();
+}
+
+// ── output.table ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn output_table_names_the_table_and_can_sit_beside_others() {
+    let mut server = writable_server();
+    let db = db_fixture("output.sqlite");
+    call(
+        &mut server,
+        "tuitab_query",
+        json!({"source": "test_data/sample.csv", "ops": [],
+               "output": {"path": db.to_string_lossy(), "table": "imported"}}),
+    );
+
+    let listing = call(
+        &mut server,
+        "tuitab_inspect",
+        json!({"source": db.to_string_lossy()}),
+    );
+    let names: Vec<&str> = listing["containers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"imported"), "{:?}", names);
+    assert!(
+        names.contains(&"users"),
+        "the neighbours survive: {:?}",
+        names
+    );
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn replacing_a_table_needs_overwrite_and_the_message_names_it() {
+    let mut server = writable_server();
+    let db = db_fixture("replace.sqlite");
+    let message = call_expecting_failure(
+        &mut server,
+        "tuitab_query",
+        json!({"source": "test_data/sample.csv", "ops": [],
+               "output": {"path": db.to_string_lossy(), "table": "users"}}),
+    );
+    assert!(message.contains("'users' already exists"), "{}", message);
+    assert!(message.contains("output.overwrite"), "{}", message);
+    assert_eq!(names_in(&db), ["ann", "bob", "cara"], "nothing written");
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn an_invalid_table_name_is_refused() {
+    let mut server = Server::new();
+    let out = tmp("badname.sqlite");
+    let _ = std::fs::remove_file(&out);
+    for bad in ["", "sqlite_master"] {
+        let message = call_expecting_failure(
+            &mut server,
+            "tuitab_query",
+            json!({"source": "test_data/sample.csv", "ops": [],
+                   "output": {"path": out.to_string_lossy(), "table": bad}}),
+        );
+        assert!(message.contains("output.table"), "{}", message);
+    }
+    assert!(!out.exists(), "nothing was created");
+}
+
+// ── The write tools exist only behind the flag ────────────────────────────────────
+
+#[test]
+fn the_write_tools_are_absent_unless_the_server_allows_writing() {
+    let mut off = Server::new();
+    let listed = send(
+        &mut off,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+    );
+    let names: Vec<&str> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&"tuitab_write"), "{:?}", names);
+
+    let mut on = writable_server();
+    let listed = send(
+        &mut on,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+    );
+    let names: Vec<&str> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"tuitab_write"), "{:?}", names);
+    assert!(names.contains(&"tuitab_write_apply"), "{:?}", names);
+}
+
+#[test]
+fn calling_a_write_tool_without_the_flag_names_the_flag() {
+    let mut server = Server::new();
+    let message =
+        call_expecting_failure(&mut server, "tuitab_write", json!({"source": "x.sqlite"}));
+    assert!(message.contains("--mcp-write"), "{}", message);
+}
+
+#[test]
+fn the_instructions_describe_writing_only_when_it_is_allowed() {
+    let mut off = Server::new();
+    let init = send(
+        &mut off,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    );
+    let text = init["result"]["instructions"].as_str().unwrap();
+    assert!(!text.contains("tuitab_write_apply"));
+
+    let mut on = writable_server();
+    let init = send(
+        &mut on,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    );
+    let text = init["result"]["instructions"].as_str().unwrap();
+    assert!(text.contains("tuitab_write_apply"), "{}", text);
+}
+
+// ── Writing, phase one: says what would happen ────────────────────────────────────
+
+#[test]
+fn a_planned_change_returns_the_sql_and_writes_nothing() {
+    let mut server = writable_server();
+    let db = db_fixture("plan.sqlite");
+    let out = call(
+        &mut server,
+        "tuitab_write",
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "set": {"name": "ANN"},
+               "where": [{"col": "id", "op": "eq", "value": 1}]}),
+    );
+
+    assert_eq!(out["updates"], 1);
+    assert_eq!(out["rows_matched"], 1);
+    assert!(out["plan_id"].as_str().unwrap().starts_with("write-"));
+    let sql = out["statements"][0].as_str().unwrap();
+    assert!(
+        sql.starts_with("UPDATE \"users\" SET \"name\" = 'ANN'"),
+        "{}",
+        sql
+    );
+    // The rows as they stand, so a mis-aimed 'where' is visible rather than inferred.
+    assert_eq!(out["affected_rows"]["row_count"], 1);
+    assert_eq!(names_in(&db), ["ann", "bob", "cara"], "nothing written yet");
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn a_change_that_changes_nothing_offers_no_plan() {
+    let mut server = writable_server();
+    let db = db_fixture("noop.sqlite");
+    let out = call(
+        &mut server,
+        "tuitab_write",
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "set": {"name": "ann"},
+               "where": [{"col": "id", "op": "eq", "value": 1}]}),
+    );
+    assert_eq!(out["summary"], "no change");
+    assert!(out.get("plan_id").is_none());
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn phase_one_refuses_what_cannot_work() {
+    let mut server = writable_server();
+    let db = db_fixture("refuse.sqlite");
+    let src = json!({"path": db.to_string_lossy(), "container": "users"});
+
+    let cases: Vec<(Value, &str)> = vec![
+        (json!({"source": src, "delete": true}), "needs a 'where'"),
+        (
+            json!({"source": src, "set": {"name": "x"}, "delete": true}),
+            "one change per call",
+        ),
+        (
+            json!({"source": src, "set": {"nope": "x"}}),
+            "No column named 'nope'",
+        ),
+        (
+            json!({"source": src, "set": {"score": "not a number"}}),
+            "not an integer",
+        ),
+        (
+            json!({"source": {"path": db.to_string_lossy(), "container": "big"}, "set": {"name": "x"}}),
+            "view",
+        ),
+        (
+            json!({"source": "test_data/sample.csv", "set": {"name": "x"}}),
+            ".sqlite or .duckdb",
+        ),
+        (
+            json!({"source": db.to_string_lossy(), "set": {"name": "x"}}),
+            "as 'container'",
+        ),
+        (json!({"source": src, "insert": [{"score": 1}]}), "NOT NULL"),
+    ];
+    for (args, expected) in cases {
+        let message = call_expecting_failure(&mut server, "tuitab_write", args);
+        assert!(
+            message.to_lowercase().contains(&expected.to_lowercase()),
+            "expected {:?} in {:?}",
+            expected,
+            message
+        );
+    }
+    assert_eq!(names_in(&db), ["ann", "bob", "cara"]);
+    std::fs::remove_file(&db).unwrap();
+}
+
+// ── Writing, phase two: runs exactly that plan ────────────────────────────────────
+
+fn plan_then_apply(server: &mut Server, args: Value) -> Value {
+    let planned = call(server, "tuitab_write", args);
+    let id = planned["plan_id"]
+        .as_str()
+        .expect("a plan was made")
+        .to_string();
+    call(server, "tuitab_write_apply", json!({"plan_id": id}))
+}
+
+#[test]
+fn applying_a_plan_writes_exactly_those_rows() {
+    let mut server = writable_server();
+    let db = db_fixture("apply.sqlite");
+    let out = plan_then_apply(
+        &mut server,
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "set": {"name": "ANN"},
+               "where": [{"col": "id", "op": "eq", "value": 1}]}),
+    );
+    assert_eq!(out["applied"], true);
+    assert_eq!(names_in(&db), ["ANN", "bob", "cara"]);
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn a_delete_removes_only_the_matched_rows() {
+    let mut server = writable_server();
+    let db = db_fixture("delete.sqlite");
+    plan_then_apply(
+        &mut server,
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "delete": true,
+               "where": [{"col": "name", "op": "eq", "value": "bob"}]}),
+    );
+    assert_eq!(names_in(&db), ["ann", "cara"]);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let other: String = conn
+        .query_row("SELECT k FROM other", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(other, "untouched", "the neighbouring table is not touched");
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn an_insert_writes_null_for_what_was_left_out_and_a_json_null_is_a_real_null() {
+    let mut server = writable_server();
+    let db = db_fixture("insert.sqlite");
+    plan_then_apply(
+        &mut server,
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "insert": [{"name": "dave", "note": null}]}),
+    );
+
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let (score, note, tier): (Option<i64>, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT score, note, tier FROM users WHERE name = 'dave'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(score, None, "a column left out is NULL");
+    assert_eq!(note, None, "a JSON null is a real NULL");
+    assert_eq!(tier, None, "left out means NULL, not the column's DEFAULT");
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn alter_adds_drops_and_renames_columns() {
+    let mut server = writable_server();
+    let db = db_fixture("alter.sqlite");
+    plan_then_apply(
+        &mut server,
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "alter": {"add": [{"name": "level", "type": "integer"}],
+                         "drop": ["note"],
+                         "rename": {"tier": "plan"}}}),
+    );
+
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT name, type FROM pragma_table_info('users') ORDER BY cid")
+        .unwrap();
+    let cols: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    let names: Vec<&str> = cols.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(names.contains(&"level"), "{:?}", names);
+    assert!(names.contains(&"plan"), "{:?}", names);
+    assert!(!names.contains(&"note"), "{:?}", names);
+    assert_eq!(
+        cols.iter().find(|(n, _)| n == "level").unwrap().1,
+        "INTEGER"
+    );
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn a_plan_cannot_be_applied_twice_and_an_unknown_id_is_refused() {
+    let mut server = writable_server();
+    let db = db_fixture("once.sqlite");
+    let planned = call(
+        &mut server,
+        "tuitab_write",
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "set": {"name": "ANN"}, "where": [{"col": "id", "op": "eq", "value": 1}]}),
+    );
+    let id = planned["plan_id"].as_str().unwrap().to_string();
+
+    let unknown = call_expecting_failure(
+        &mut server,
+        "tuitab_write_apply",
+        json!({"plan_id": "write-99"}),
+    );
+    assert!(unknown.contains("write-99"), "{}", unknown);
+
+    call(
+        &mut server,
+        "tuitab_write_apply",
+        json!({"plan_id": id.clone()}),
+    );
+    let again = call_expecting_failure(&mut server, "tuitab_write_apply", json!({"plan_id": id}));
+    assert!(again.contains("No plan"), "{}", again);
+    assert_eq!(
+        names_in(&db),
+        ["ANN", "bob", "cara"],
+        "applied exactly once"
+    );
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn a_second_plan_replaces_the_first() {
+    let mut server = writable_server();
+    let db = db_fixture("replaceplan.sqlite");
+    let src = json!({"path": db.to_string_lossy(), "container": "users"});
+    let first = call(
+        &mut server,
+        "tuitab_write",
+        json!({"source": src, "set": {"name": "ONE"}, "where": [{"col": "id", "op": "eq", "value": 1}]}),
+    );
+    let first_id = first["plan_id"].as_str().unwrap().to_string();
+    call(
+        &mut server,
+        "tuitab_write",
+        json!({"source": src, "set": {"name": "TWO"}, "where": [{"col": "id", "op": "eq", "value": 2}]}),
+    );
+
+    let stale = call_expecting_failure(
+        &mut server,
+        "tuitab_write_apply",
+        json!({"plan_id": first_id}),
+    );
+    assert!(stale.contains("waiting to be applied"), "{}", stale);
+    assert_eq!(names_in(&db), ["ann", "bob", "cara"]);
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn a_row_changed_between_the_phases_stops_the_write() {
+    let mut server = writable_server();
+    let db = db_fixture("drift.sqlite");
+    let planned = call(
+        &mut server,
+        "tuitab_write",
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "set": {"name": "ANN"}, "where": [{"col": "id", "op": "eq", "value": 1}]}),
+    );
+    let id = planned["plan_id"].as_str().unwrap().to_string();
+
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch("UPDATE users SET name = 'elsewhere' WHERE id = 1")
+        .unwrap();
+
+    let message = call_expecting_failure(&mut server, "tuitab_write_apply", json!({"plan_id": id}));
+    assert!(
+        message.contains("changed since it was opened"),
+        "{}",
+        message
+    );
+    assert_eq!(
+        names_in(&db),
+        ["elsewhere", "bob", "cara"],
+        "nothing of ours was written"
+    );
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn two_writes_in_one_session_both_land_and_inspect_sees_them() {
+    let mut server = writable_server();
+    let db = db_fixture("twice.sqlite");
+    let src = json!({"path": db.to_string_lossy(), "container": "users"});
+
+    plan_then_apply(
+        &mut server,
+        json!({"source": src, "set": {"name": "ONE"}, "where": [{"col": "id", "op": "eq", "value": 1}]}),
+    );
+    plan_then_apply(
+        &mut server,
+        json!({"source": src, "set": {"name": "TWO"}, "where": [{"col": "id", "op": "eq", "value": 2}]}),
+    );
+    assert_eq!(names_in(&db), ["ONE", "TWO", "cara"]);
+
+    // The cache must not answer from a frame that predates the writes.
+    let out = call(
+        &mut server,
+        "tuitab_query",
+        json!({"source": src, "ops": [{"filter": [{"col": "name", "op": "eq", "value": "ONE"}]}]}),
+    );
+    assert_eq!(out["row_count"], 1);
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn duckdb_writes_the_same_way() {
+    let mut server = writable_server();
+    let db = db_fixture("write.duckdb");
+    plan_then_apply(
+        &mut server,
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "set": {"name": "ANN"},
+               "where": [{"col": "id", "op": "eq", "value": 1}]}),
+    );
+
+    let (df, _) = tuitab::data::io::load_duckdb_table_full(&db, "users").unwrap();
+    assert_eq!(df.get_physical(0, 1), "ANN");
+    std::fs::remove_file(&db).unwrap();
+}
+
+/// The same column, read through a table and through a view over it, has to answer a
+/// filter the same way. Typing used to land only on the row-addressable path.
+#[test]
+fn a_filter_over_a_view_compares_the_same_way_as_over_the_table() {
+    for name in ["viewfilter.sqlite", "viewfilter.duckdb"] {
+        let mut server = Server::new();
+        let db = db_fixture(name);
+        let via_table = call(
+            &mut server,
+            "tuitab_query",
+            json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+                   "ops": [{"filter": [{"col": "score", "op": "gt", "value": 100}]}]}),
+        );
+        assert_eq!(via_table["row_count"], 1, "{}", name);
+
+        // `big` is a view; its `id` is the same declared INTEGER.
+        let via_view = call(
+            &mut server,
+            "tuitab_query",
+            json!({"source": {"path": db.to_string_lossy(), "container": "big"},
+                   "ops": [{"filter": [{"col": "id", "op": "gt", "value": 1}]}]}),
+        );
+        assert_eq!(via_view["row_count"], 1, "{}: the view must type too", name);
+        std::fs::remove_file(&db).unwrap();
+    }
+}
+
+#[test]
+fn writing_into_a_database_invalidates_the_cached_frame_of_it() {
+    let mut server = writable_server();
+    let db = db_fixture("output-cache.sqlite");
+
+    // Read a table first, so the server holds a frame of this file.
+    let before = call(
+        &mut server,
+        "tuitab_query",
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"}, "ops": []}),
+    );
+    assert_eq!(before["row_count"], json!(3));
+
+    // Write a second table into the same file…
+    call(
+        &mut server,
+        "tuitab_query",
+        json!({"source": "test_data/sample.csv", "ops": [],
+               "output": {"path": db.to_string_lossy(), "table": "imported"}}),
+    );
+
+    // …and the very next read must see it rather than the snapshot from before.
+    let listing = call(
+        &mut server,
+        "tuitab_inspect",
+        json!({"source": db.to_string_lossy()}),
+    );
+    let names: Vec<&str> = listing["containers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"imported"), "{:?}", names);
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn a_duckdb_file_named_db_is_read_as_duckdb() {
+    let mut server = Server::new();
+    let path = tmp("mcp-disguised.db");
+    let _ = std::fs::remove_file(&path);
+    {
+        let conn = duckdb::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE users (id INTEGER, name TEXT);
+             INSERT INTO users VALUES (1, 'ann'), (2, 'bob');
+             CHECKPOINT;",
+        )
+        .unwrap();
+    }
+
+    let listing = call(
+        &mut server,
+        "tuitab_inspect",
+        json!({"source": path.to_string_lossy()}),
+    );
+    let names: Vec<&str> = listing["containers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["users"]);
+
+    let rows = call(
+        &mut server,
+        "tuitab_query",
+        json!({"source": {"path": path.to_string_lossy(), "container": "users"}, "ops": []}),
+    );
+    assert_eq!(rows["row_count"], json!(2));
+    std::fs::remove_file(&path).unwrap();
+}
+
+// ── The write gate on output.path ─────────────────────────────────────────────────
+
+#[test]
+fn writing_into_an_existing_database_needs_the_write_flag() {
+    let mut off = Server::new();
+    let db = db_fixture("gate-existing.sqlite");
+    let message = call_expecting_failure(
+        &mut off,
+        "tuitab_query",
+        json!({"source": "test_data/sample.csv", "ops": [],
+               "output": {"path": db.to_string_lossy(), "table": "imported"}}),
+    );
+    assert!(message.contains("--mcp-write"), "{}", message);
+    assert_eq!(names_in(&db), ["ann", "bob", "cara"], "nothing written");
+
+    // A database that does not exist yet has nothing to lose.
+    let fresh = tmp("gate-fresh.sqlite");
+    let _ = std::fs::remove_file(&fresh);
+    call(
+        &mut off,
+        "tuitab_query",
+        json!({"source": "test_data/sample.csv", "ops": [],
+               "output": {"path": fresh.to_string_lossy(), "table": "imported"}}),
+    );
+    assert!(fresh.exists());
+
+    // And with the flag, the existing one is fine.
+    let mut on = writable_server();
+    call(
+        &mut on,
+        "tuitab_query",
+        json!({"source": "test_data/sample.csv", "ops": [],
+               "output": {"path": db.to_string_lossy(), "table": "imported"}}),
+    );
+    std::fs::remove_file(&db).unwrap();
+    std::fs::remove_file(&fresh).unwrap();
+}
+
+#[test]
+fn a_query_cannot_write_into_the_database_it_read() {
+    let mut server = writable_server();
+    let db = db_fixture("gate-samefile.sqlite");
+    let message = call_expecting_failure(
+        &mut server,
+        "tuitab_query",
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"}, "ops": [],
+               "output": {"path": db.to_string_lossy(), "table": "copy", "overwrite": true}}),
+    );
+    assert!(message.contains("source this query read"), "{}", message);
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn overwriting_a_view_is_refused_in_words() {
+    let mut server = writable_server();
+    let db = db_fixture("gate-view.sqlite");
+    let message = call_expecting_failure(
+        &mut server,
+        "tuitab_query",
+        json!({"source": "test_data/sample.csv", "ops": [],
+               "output": {"path": db.to_string_lossy(), "table": "big", "overwrite": true}}),
+    );
+    assert!(message.contains("is a view"), "{}", message);
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn a_table_name_with_spaces_around_it_is_trimmed() {
+    let mut server = Server::new();
+    let out = tmp("trimmed.sqlite");
+    let _ = std::fs::remove_file(&out);
+    call(
+        &mut server,
+        "tuitab_query",
+        json!({"source": "test_data/sample.csv", "ops": [],
+               "output": {"path": out.to_string_lossy(), "table": "  spaced  "}}),
+    );
+    let conn = rusqlite::Connection::open(&out).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .unwrap();
+    let names: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(names, ["spaced"]);
+    std::fs::remove_file(&out).unwrap();
+}
+
+// ── The pending plan ──────────────────────────────────────────────────────────────
+
+#[test]
+fn planning_again_retires_the_previous_plan_and_says_so() {
+    let mut server = writable_server();
+    let db = db_fixture("pending-replace.sqlite");
+    let first = call(
+        &mut server,
+        "tuitab_write",
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "set": {"note": "one"},
+               "where": [{"col": "name", "op": "eq", "value": "ann"}]}),
+    );
+    let first_id = first["plan_id"].as_str().unwrap().to_string();
+
+    let second = call(
+        &mut server,
+        "tuitab_write",
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "set": {"note": "two"},
+               "where": [{"col": "name", "op": "eq", "value": "bob"}]}),
+    );
+    let note = second["note"].as_str().unwrap();
+    assert!(
+        note.contains(&first_id),
+        "the retired plan is not named: {}",
+        note
+    );
+
+    let message = call_expecting_failure(
+        &mut server,
+        "tuitab_write_apply",
+        json!({"plan_id": first_id}),
+    );
+    assert!(message.contains("No plan"), "{}", message);
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn a_failed_second_plan_does_not_leave_the_first_applicable() {
+    let mut server = writable_server();
+    let db = db_fixture("pending-failed.sqlite");
+    let first = call(
+        &mut server,
+        "tuitab_write",
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "set": {"note": "one"},
+               "where": [{"col": "name", "op": "eq", "value": "ann"}]}),
+    );
+    let first_id = first["plan_id"].as_str().unwrap().to_string();
+
+    // A second call that fails must still retire the first: the model has moved on.
+    call_expecting_failure(
+        &mut server,
+        "tuitab_write",
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "set": {"nosuchcolumn": "x"}}),
+    );
+
+    let message = call_expecting_failure(
+        &mut server,
+        "tuitab_write_apply",
+        json!({"plan_id": first_id}),
+    );
+    assert!(message.contains("No plan"), "{}", message);
+    assert_eq!(names_in(&db), ["ann", "bob", "cara"], "nothing was written");
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn alter_refuses_a_word_it_does_not_know() {
+    let mut server = writable_server();
+    let db = db_fixture("alter-typo.sqlite");
+    for spec in [
+        json!({"retype": {"score": "float"}}),
+        json!({"reorder": ["name", "id"]}),
+        json!(true),
+        json!({}),
+    ] {
+        let message = call_expecting_failure(
+            &mut server,
+            "tuitab_write",
+            json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+                   "alter": spec}),
+        );
+        assert!(
+            message.contains("alter") || message.contains("not something alter does"),
+            "{} → {}",
+            spec,
+            message
+        );
+    }
+    std::fs::remove_file(&db).unwrap();
+}
+
+// ── What the model is told when something fails ───────────────────────────────────
+
+#[test]
+fn an_engine_error_says_what_was_being_done() {
+    let mut server = writable_server();
+    let db = db_fixture("errors-context.sqlite");
+
+    // A polars failure inside `insert` used to arrive as a bare shape complaint.
+    let message = call_expecting_failure(
+        &mut server,
+        "tuitab_write",
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "insert": [{"name": "eve", "score": "not a number"}]}),
+    );
+    assert!(!message.is_empty());
+
+    // A load failure names the file.
+    let message = call_expecting_failure(
+        &mut server,
+        "tuitab_query",
+        json!({"source": {"path": "test_data/sample.csv", "format": "parquet"}, "ops": []}),
+    );
+    assert!(message.contains("sample.csv"), "{}", message);
+
+    // A jq failure says it was jq.
+    let message = call_expecting_failure(
+        &mut server,
+        "tuitab_jq",
+        json!({"source": "test_data/nested.json", "program": "this is not jq ("}),
+    );
+    assert!(message.contains("jq"), "{}", message);
+
+    // And a refusal from the write engine still arrives in its own words.
+    let message = call_expecting_failure(
+        &mut server,
+        "tuitab_write",
+        json!({"source": {"path": db.to_string_lossy(), "container": "big"},
+               "set": {"name": "x"}}),
+    );
+    assert!(message.contains("view"), "{}", message);
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn an_unwritable_output_is_refused_before_the_pipeline_runs() {
+    let mut server = Server::new();
+    // The ops name a column that does not exist, so if the pipeline ran first its
+    // error would be the one that came back.
+    let message = call_expecting_failure(
+        &mut server,
+        "tuitab_query",
+        json!({"source": "test_data/sample.csv",
+               "ops": [{"sort": {"col": "nosuchcolumn"}}],
+               "output": {"path": tmp("out.xyz").to_string_lossy()}}),
+    );
+    assert!(message.contains("no writer for '.xyz'"), "{}", message);
+
+    let message = call_expecting_failure(
+        &mut server,
+        "tuitab_query",
+        json!({"source": "test_data/sample.csv", "ops": [],
+               "output": {"path": tmp("no/such/dir/out.csv").to_string_lossy()}}),
+    );
+    assert!(message.contains("no directory"), "{}", message);
+}
+
+#[test]
+fn a_caller_can_ask_for_more_statements_than_the_default() {
+    let mut server = writable_server();
+    let db = tmp("show-statements.sqlite");
+    let _ = std::fs::remove_file(&db);
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+            .unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        for i in 0..60 {
+            tx.execute(
+                "INSERT INTO users (id, name) VALUES (?1, ?2)",
+                rusqlite::params![i, format!("n{}", i)],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    // One statement per row: each row gets a distinct value.
+    let rows: Vec<serde_json::Value> = (0..60)
+        .map(|i| json!({"id": 1000 + i, "name": format!("x{}", i)}))
+        .collect();
+
+    let default = call(
+        &mut server,
+        "tuitab_write",
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "insert": rows}),
+    );
+    assert_eq!(default["statements"].as_array().unwrap().len(), 20);
+    assert_eq!(default["statements_total"], json!(60));
+    assert_eq!(default["statements_not_shown"], json!(40));
+
+    let more = call(
+        &mut server,
+        "tuitab_write",
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "insert": rows, "show_statements": 50}),
+    );
+    assert_eq!(more["statements"].as_array().unwrap().len(), 50);
+    assert_eq!(more["statements_not_shown"], json!(10));
+
+    // Asking for more than the ceiling gets the ceiling, not everything.
+    let capped = call(
+        &mut server,
+        "tuitab_write",
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "insert": rows, "show_statements": 5000}),
+    );
+    assert_eq!(capped["statements"].as_array().unwrap().len(), 60);
+    std::fs::remove_file(&db).unwrap();
+}
+
+#[test]
+fn two_sources_read_in_turn_do_not_evict_each_other() {
+    let mut server = Server::new();
+    let a = tmp("cache-a.csv");
+    let b = tmp("cache-b.csv");
+    std::fs::write(&a, "x\n1\n").unwrap();
+    std::fs::write(&b, "y\n2\n").unwrap();
+
+    for _ in 0..3 {
+        let ra = call(
+            &mut server,
+            "tuitab_query",
+            json!({"source": a.to_string_lossy(), "ops": []}),
+        );
+        assert_eq!(ra["columns"][0]["name"], json!("x"));
+        let rb = call(
+            &mut server,
+            "tuitab_query",
+            json!({"source": b.to_string_lossy(), "ops": []}),
+        );
+        assert_eq!(rb["columns"][0]["name"], json!("y"));
+    }
+    assert_eq!(server.cache.len(), 2, "each source should hold a slot");
+
+    // A change to one of them is still seen, cache or no cache.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    std::fs::write(&a, "x\n1\n2\n3\n").unwrap();
+    let ra = call(
+        &mut server,
+        "tuitab_query",
+        json!({"source": a.to_string_lossy(), "ops": []}),
+    );
+    assert_eq!(ra["row_count"], json!(3));
+
+    std::fs::remove_file(&a).unwrap();
+    std::fs::remove_file(&b).unwrap();
 }

@@ -77,6 +77,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         | AppMode::SelectRandomInput
         | AppMode::DedupTiebreakerSelect
         | AppMode::SaveShapeSelect
+        | AppMode::SqlConfirm
+        | AppMode::TableNameInput
         | AppMode::OpenAsSelect
         | AppMode::DocSearching
         | AppMode::PathInput
@@ -290,6 +292,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     None,
                     frame.area(),
                 );
+            }
+            if app.mode == AppMode::TableNameInput {
+                popup::render_input_popup(
+                    frame,
+                    "Table name (Enter to confirm, Esc to cancel)",
+                    &app.save.table_input,
+                    app.save.error.as_deref(),
+                    frame.area(),
+                );
+            }
+            if app.mode == AppMode::SqlConfirm {
+                popup::render_sql_confirm(frame, app, frame.area());
             }
             if app.mode == AppMode::SaveShapeSelect {
                 let items: Vec<(String, String)> = app

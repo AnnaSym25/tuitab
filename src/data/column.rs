@@ -33,8 +33,6 @@ pub struct ColumnMeta {
     pub precision: u8,
     /// Whether this column is pinned to the left
     pub pinned: bool,
-    /// Position among unpinned columns at the time this column was pinned (for restore on unpin)
-    pub pin_restore_pos: Option<usize>,
     /// Currency kind, used when col_type == Currency
     pub currency: Option<CurrencyKind>,
     /// Current width display mode (Default / Fit).
@@ -50,6 +48,23 @@ pub struct ColumnMeta {
     /// Backup of original Datetime values before converting to Date
     /// Stores formatted datetime strings for recovery
     pub backup_datetime_str: Option<Vec<Option<String>>>,
+
+    /// The name this column had in the database table the sheet was loaded from.
+    ///
+    /// `None` means it was not there — created by `zi`, `=` or `zx` — or that the sheet
+    /// did not come from a database at all.  Renaming changes `name` and leaves this
+    /// alone, which is what makes A→B→C a single `RENAME COLUMN` rather than two, and
+    /// what tells an added column apart from a renamed one after the fact.
+    #[serde(default)]
+    pub db_origin: Option<String>,
+
+    /// The type the user deliberately assigned with `t`.
+    ///
+    /// Separate from [`Self::col_type`] because `col_replace` (`zr`/`zg`) force-sets
+    /// `String` as a side effect of a find-and-replace, and a find-and-replace must
+    /// never turn into an `ALTER COLUMN … TYPE`.
+    #[serde(default)]
+    pub db_retype: Option<ColumnType>,
 }
 
 impl ColumnMeta {
@@ -66,12 +81,13 @@ impl ColumnMeta {
             expression: None,
             precision: 2,
             pinned: false,
-            pin_restore_pos: None,
             currency: None,
             width_mode: ColumnWidthMode::Default,
             default_width: 0,
             selected: false,
             backup_datetime_str: None,
+            db_origin: None,
+            db_retype: None,
         }
     }
 }

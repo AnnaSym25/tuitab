@@ -112,19 +112,34 @@ pub fn copy_column_comma_quoted(values: &[String]) -> Result<()> {
     copy_text(&quoted.join(", "))
 }
 
+/// One clipboard for the life of the process.
+///
+/// On X11 and Wayland the clipboard is not storage: the text belongs to the process
+/// that set it and is served over a live connection, which arboard closes when the
+/// `Clipboard` is dropped. Building one per call therefore reported a successful copy
+/// and left an empty clipboard behind the moment the function returned — what Linux
+/// users saw. macOS has a real pasteboard and does not care either way.
+static CLIPBOARD: std::sync::Mutex<Option<Clipboard>> = std::sync::Mutex::new(None);
+
+fn with_clipboard<T>(
+    f: impl FnOnce(&mut Clipboard) -> std::result::Result<T, arboard::Error>,
+) -> Result<T> {
+    let mut guard = CLIPBOARD
+        .lock()
+        .map_err(|_| color_eyre::eyre::eyre!("clipboard is unavailable"))?;
+    if guard.is_none() {
+        *guard = Some(Clipboard::new().map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?);
+    }
+    let cb = guard.as_mut().expect("just initialised");
+    f(cb).map_err(|e| color_eyre::eyre::eyre!(e.to_string()))
+}
+
 /// Copy a plain text string to the system clipboard.
 pub fn copy_text(text: &str) -> Result<()> {
-    let mut cb = Clipboard::new().map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
-    cb.set_text(text.to_string())
-        .map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
-    Ok(())
+    with_clipboard(|cb| cb.set_text(text.to_string()))
 }
 
 /// Read TSV-formatted text from the system clipboard.
 pub fn paste_from_clipboard() -> Result<String> {
-    let mut cb = Clipboard::new().map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
-    let text = cb
-        .get_text()
-        .map_err(|e| color_eyre::eyre::eyre!(e.to_string()))?;
-    Ok(text)
+    with_clipboard(|cb| cb.get_text())
 }

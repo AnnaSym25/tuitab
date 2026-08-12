@@ -172,7 +172,9 @@ impl App {
         new_df.aggregates_cache = None;
 
         let col_name = new_df.columns[filter_col].name.clone();
-        let sheet = crate::sheet::Sheet::new(format!("Filter: {} = {}", col_name, label), new_df);
+        let mut sheet =
+            crate::sheet::Sheet::new(format!("Filter: {} = {}", col_name, label), new_df);
+        sheet.inherit_db_origin(self.stack.active());
         self.chart.drill_return = true;
         self.stack.push(sheet);
         self.mode = AppMode::Normal;

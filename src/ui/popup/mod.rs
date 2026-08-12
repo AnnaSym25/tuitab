@@ -7,6 +7,7 @@ mod help;
 mod input;
 mod join;
 mod misc;
+mod sql_confirm;
 mod type_select;
 mod window_dir;
 mod window_fn;
@@ -22,6 +23,7 @@ pub use join::{
     render_join_type_popup,
 };
 pub use misc::{render_chart_agg_popup, render_confirm_popup, render_copy_format_popup};
+pub use sql_confirm::render_sql_confirm;
 pub use type_select::{render_currency_popup, render_type_select_popup};
 pub use window_dir::render_window_dir_popup;
 pub use window_fn::render_window_fn_popup;

@@ -34,8 +34,8 @@ cat data.csv | tuitab -t csv      # read from a pipe
 ## Highlights
 
 - **Tabular and structured formats** — CSV/TSV (auto-delimiter), JSON, JSONL/NDJSON,
-  YAML, TOML, Parquet, Excel (xlsx/xls), SQLite, DuckDB. Browse a whole directory, or
-  pipe data in over stdin.
+  YAML, TOML, Parquet, Arrow/Feather, Excel (xlsx/xls), SQLite, DuckDB. Browse a whole
+  directory, or pipe data in over stdin.
 - **Nested data, edited in place** — JSON/YAML/TOML open as a table over the real
   document: `Enter` dives into a nested object or list, `(` expands a nested column
   into one column per key, `m` switches between record and key/value layouts, and edits
@@ -49,12 +49,31 @@ cat data.csv | tuitab -t csv      # read from a pipe
   lag/lead, share of a group) from an expression language with `and` / `or` / `not`.
 - **Clean, fast, type-aware** — Polars-backed engine, Everforest theme, undo/redo,
   currency / percentage / date column types.
-- **Export and convert** — write back to CSV, TSV, Parquet, JSON, JSONL, YAML, TOML,
-  Excel, or SQLite. Converting between structured formats is just a different
+- **Build a database from nothing** — `tuitab inventory.sqlite` on a file that does not
+  exist opens a blank sheet. Add columns (`zi`), give them types (`t`), add rows (`o` /
+  `O`), type the values, `Ctrl+S`. tuitab asks what to call the table and writes a real
+  typed one: an Integer column is declared `INTEGER` and stores integers, NULL stays
+  NULL. SQLite and DuckDB both.
+- **Edit a database table and save it back** — open a SQLite or DuckDB table, edit
+  cells, delete or paste rows, add/drop/rename columns, then `Ctrl+S` onto the same
+  file. tuitab shows every `ALTER TABLE`/`UPDATE`/`INSERT`/`DELETE` it is about to run
+  and waits for confirmation, then runs them in one transaction; the rest of the
+  database — other tables, indexes, views, triggers — is untouched. Reordering columns
+  (and changing a type on SQLite) rebuilds the table, which the popup says out loud
+  first. Anything the engine would reject, or that a rebuild could not carry across
+  intact, is refused with a sentence before a single statement runs. Save to a different `.db` instead and the
+  whole database is copied first, leaving the original alone. NULL is shown as `NULL`
+  and typed as `\N`, so it never silently becomes an empty string.
+- **Export and convert** — write back to CSV, TSV, Parquet, Arrow, JSON, JSONL, YAML,
+  TOML, Excel, or SQLite. Converting between structured formats is just a different
   extension: open `config.toml`, save as `config.yaml`. Yank rows to the clipboard as
   TSV, CSV, JSON, or Markdown.
 - **MCP server** — `tuitab --mcp` exposes the same engine to an AI assistant, so it
-  computes over your data instead of guessing at it.
+  computes over your data instead of guessing at it. It reads databases properly:
+  tables *and* views, with each column's declared SQL type, keys and defaults.
+  Add `--mcp-write` and it can change a table too — but only in two steps, the
+  first of which returns the exact SQL and writes nothing, so the assistant has
+  to show you what it is about to run.
 
 ---
 

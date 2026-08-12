@@ -43,8 +43,9 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     let sheet = app.stack.active();
     let col_name = sheet
-        .search_col
-        .and_then(|c| sheet.dataframe.columns.get(c))
+        .dataframe
+        .columns
+        .get(sheet.search_col())
         .map(|m| m.name.as_str())
         .unwrap_or("?");
 

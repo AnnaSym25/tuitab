@@ -3420,6 +3420,7 @@ dependencies = [
  "rand 0.9.4",
  "rayon",
  "recursive",
+ "serde_json",
  "slotmap",
  "tokio",
  "version_check",
@@ -4992,7 +4993,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tuitab"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "arboard",
  "bincode 1.3.3",

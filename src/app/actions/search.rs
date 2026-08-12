@@ -7,7 +7,11 @@ impl App {
             // ── Search (/) ────────────────────────────────────────────────────
             Action::StartSearch => {
                 let s = self.stack.active_mut();
-                s.search_col = Some(s.cursor_col);
+                s.search_col_name = s
+                    .dataframe
+                    .columns
+                    .get(s.cursor_col)
+                    .map(|c| c.name.clone());
                 s.search_input.clear();
                 self.mode = AppMode::Searching;
                 self.status_message = "Search (regex): ".to_string();
@@ -62,7 +66,7 @@ impl App {
             Action::ClearSearch => {
                 let s = self.stack.active_mut();
                 s.search_pattern = None;
-                s.search_col = None;
+                s.search_col_name = None;
                 self.status_message = "Search cleared".to_string();
                 None
             }

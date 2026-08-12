@@ -3,6 +3,21 @@ use crate::types::{Action, AppMode, CopyPending};
 use polars::prelude::*;
 use ratatui::widgets::ScrollbarState;
 
+/// What one field of a pasted line means for the column it lands in.
+///
+/// A field the line does not have — a row shorter than the table — is absent, not the
+/// empty string: `""` is not a number and would fail the strict cast for every numeric
+/// column it touched. An empty field that is actually there is only NULL for a column
+/// that cannot hold text; in a text column the empty string is a value, and turning it
+/// into NULL behind the user's back is exactly what tuitab promises not to do.
+fn paste_field(field: Option<&str>, text_col: bool) -> Option<String> {
+    match field {
+        None => None,
+        Some(v) if v.is_empty() && !text_col => None,
+        Some(v) => Some(v.to_string()),
+    }
+}
+
 impl App {
     pub(crate) fn handle_clipboard_action(&mut self, action: Action) -> Option<Action> {
         match action {
@@ -27,7 +42,9 @@ impl App {
                 let row = s.table_state.selected().unwrap_or(0);
                 let col = s.cursor_col;
                 let phys = s.dataframe.row_order.get(row).copied().unwrap_or(0);
-                let val = s.dataframe.format_display(phys, col);
+                // The value, not the rendering of it: a Float column is displayed to two
+                // decimals, and copying that back into a cell would silently round it.
+                let val = s.dataframe.get_editable(phys, col);
                 match crate::clipboard::copy_text(&val) {
                     Ok(_) => self.status_message = format!("Copied cell value: {}", val),
                     Err(e) => self.status_message = format!("Clipboard error: {}", e),
@@ -42,7 +59,7 @@ impl App {
                     let s = self.stack.active();
                     let row = s.table_state.selected().unwrap_or(0);
                     let phys = s.dataframe.row_order.get(row).copied().unwrap_or(0);
-                    let val = s.dataframe.format_display(phys, s.cursor_col);
+                    let val = s.dataframe.get_editable(phys, s.cursor_col);
                     self.status_message = match crate::clipboard::copy_text(&val) {
                         Ok(_) => format!("Copied cell value: {}", val),
                         Err(e) => format!("Clipboard error: {}", e),
@@ -85,6 +102,10 @@ impl App {
             }
             Action::PasteRows => {
                 self.paste_rows();
+                None
+            }
+            Action::PasteCell => {
+                self.paste_cell();
                 None
             }
             other => Some(other),
@@ -257,6 +278,35 @@ impl App {
         }
     }
 
+    /// `P` — paste the clipboard's first line into the cell under the cursor.
+    /// Routed through the same write as `e`, so typing, document write-back, undo and
+    /// the error message are whatever editing that cell by hand would give.
+    pub(super) fn paste_cell(&mut self) {
+        let text = match crate::clipboard::paste_from_clipboard() {
+            Ok(t) => t,
+            Err(e) => {
+                self.status_message = format!("Clipboard error: {}", e);
+                return;
+            }
+        };
+        let Some(value) = text.lines().next() else {
+            self.status_message = "Clipboard is empty".to_string();
+            return;
+        };
+        let value = value.trim_end_matches('\r').to_string();
+        let s = self.stack.active_mut();
+        let Some(display_row) = s.table_state.selected() else {
+            return;
+        };
+        if display_row >= s.dataframe.visible_row_count() {
+            return;
+        }
+        s.edit_row = s.dataframe.row_order[display_row];
+        s.edit_col = s.cursor_col;
+        s.edit_input = crate::ui::text_input::TextInput::with_value(value);
+        self.apply_edit();
+    }
+
     pub(super) fn paste_rows(&mut self) {
         // A clipboard table has no defined meaning as document rows: the columns are a
         // projection, not the shape of a node.  Pasting into a document is `E`.
@@ -273,10 +323,12 @@ impl App {
                 let df = &mut s.dataframe;
                 let col_count = df.col_count();
                 if col_count == 0 {
+                    s.undo_stack.pop();
                     return;
                 }
                 let lines: Vec<&str> = text.lines().collect();
                 if lines.is_empty() {
+                    s.undo_stack.pop();
                     self.status_message = "Clipboard is empty".to_string();
                     return;
                 }
@@ -292,21 +344,48 @@ impl App {
 
                 let mut series_vec = Vec::new();
                 for col in 0..col_count {
-                    let mut col_data = Vec::new();
+                    let target = df.df.columns()[col].dtype().clone();
+                    let text_col = target == DataType::String;
+                    let mut col_data: Vec<Option<String>> = Vec::new();
                     for line in &lines[start..] {
                         let fields: Vec<&str> = line.split('\t').collect();
-                        let val = fields.get(col).unwrap_or(&"").to_string();
+                        let val = paste_field(fields.get(col).copied(), text_col);
                         col_data.push(val);
                     }
                     let series = Series::new(df.columns[col].name.clone().into(), &col_data);
+                    // Clipboard text is text; the column it lands in may not be. Cast
+                    // strictly so a value the column cannot hold is named here rather
+                    // than becoming a silent NULL or failing the stack below with a
+                    // dtype error that says nothing about which column.
+                    let target = &target;
+                    let series = match series.strict_cast(target) {
+                        Ok(cast) => cast,
+                        Err(_) => {
+                            let msg = format!(
+                                "Paste failed: column '{}' holds {}, and the pasted text is not",
+                                df.columns[col].name, target
+                            );
+                            s.undo_stack.pop();
+                            self.status_message = msg;
+                            return;
+                        }
+                    };
                     series_vec.push(series.into());
                 }
                 if let Ok(new_df) = polars::prelude::DataFrame::new_infer_height(series_vec) {
                     let original_height = df.df.height();
+                    // The stack has to succeed before anything else is told rows arrived:
+                    // `row_order` would otherwise point past the end of the frame, and
+                    // `db_rows.ids` — which is indexed by physical row — would be longer
+                    // than the frame it indexes.  It fails for real, on a dtype mismatch:
+                    // the pasted columns are built as text.
                     if original_height == 0 {
                         df.df = new_df;
-                    } else {
-                        let _ = df.df.vstack_mut(&new_df);
+                    } else if let Err(e) = df.df.vstack_mut(&new_df) {
+                        let msg = format!("Paste failed: {}", e);
+                        s.undo_stack.pop();
+                        self.status_message = msg;
+                        return;
                     }
                     let added = lines.len() - start;
                     for i in 0..added {
@@ -314,6 +393,7 @@ impl App {
                         std::sync::Arc::make_mut(&mut df.row_order).push(new_idx);
                         std::sync::Arc::make_mut(&mut df.original_order).push(new_idx);
                     }
+                    df.record_added_rows(added);
                     df.modified = true;
                     df.calc_widths(40, 1000);
                     let vis = df.visible_row_count();
@@ -327,5 +407,19 @@ impl App {
                 self.status_message = format!("Clipboard error: {}", e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod paste_field_tests {
+    use super::paste_field;
+
+    #[test]
+    fn a_missing_field_is_null_and_an_empty_text_field_is_not() {
+        assert_eq!(paste_field(None, false), None);
+        assert_eq!(paste_field(None, true), None);
+        assert_eq!(paste_field(Some(""), false), None);
+        assert_eq!(paste_field(Some(""), true).as_deref(), Some(""));
+        assert_eq!(paste_field(Some("7"), false).as_deref(), Some("7"));
     }
 }

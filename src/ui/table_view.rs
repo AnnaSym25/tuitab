@@ -59,9 +59,15 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|&w| Constraint::Length(w))
         .collect();
 
+    // Derived rather than stored: it clears itself the moment the file is written, so
+    // no save path has to remember to reset it.  One `stat` per redraw, and redraws
+    // happen on a keypress, not on a timer.
+    let is_new = sheet.source_path.as_deref().is_some_and(|p| !p.exists());
+
     let title = format!(
-        " {}{}{} ",
+        " {}{}{}{} ",
         sheet.title,
+        if is_new { " [new]" } else { "" },
         if df.modified { " [*]" } else { "" },
         if stack_depth > 1 {
             format!(" [{}/{}]", stack_depth, stack_depth)
@@ -443,10 +449,20 @@ fn make_data_rows(
                         return Cell::from(Span::styled("│", T::separator_style()));
                     }
 
-                    let mut text = DataFrame::anyvalue_to_string_fmt(&df.get_val(display_row, col));
+                    let raw_val = df.get_val(display_row, col);
+                    // A NULL and an empty string are different values in a database and
+                    // saving one as the other is a silent data change, so they must not
+                    // look alike on screen.  Dim italic keeps a literal "NULL" in a text
+                    // column distinguishable from the real thing.
+                    let is_null = matches!(raw_val, polars::prelude::AnyValue::Null);
+                    let mut text = if is_null {
+                        "NULL".to_string()
+                    } else {
+                        DataFrame::anyvalue_to_string_fmt(&raw_val)
+                    };
                     let col_meta = &df.columns[col];
                     let mut is_negative_currency = false;
-                    if !text.is_empty() {
+                    if !is_null && !text.is_empty() {
                         let p = col_meta.precision as usize;
                         if col_meta.col_type == crate::types::ColumnType::Percentage {
                             if let Ok(f) = text.parse::<f64>() {
@@ -515,6 +531,12 @@ fn make_data_rows(
 
                     if is_negative_currency && !is_selected && !is_active {
                         style = style.fg(T::RED);
+                    }
+
+                    if is_null {
+                        style = style
+                            .fg(T::GREY1)
+                            .add_modifier(ratatui::style::Modifier::ITALIC);
                     }
 
                     if !is_selected

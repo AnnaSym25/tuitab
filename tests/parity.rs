@@ -25,8 +25,11 @@ enum Parity {
     Composable(&'static str),
     /// Belongs to the terminal alone, for the stated reason.
     UiOnly(&'static str),
-    /// Should be reachable from the server and is not.
-    Gap(&'static str),
+    /// Should be reachable from the server and is not.  Carries an index into
+    /// [`KNOWN_GAPS`] rather than a free string: a newly classified gap that nobody
+    /// declared panics on the index, which is what makes the list below the register it
+    /// claims to be instead of a comment.
+    Gap(usize),
 }
 
 /// Where a terminal action stands relative to the server.
@@ -153,7 +156,14 @@ fn parity(action: &Action) -> Parity {
         | Action::SelectRandomCursorLeft
         | Action::SelectRandomCursorRight
         | Action::SelectRandomCursorStart
-        | Action::SelectRandomCursorEnd => Parity::UiOnly("editing a text field"),
+        | Action::SelectRandomCursorEnd
+        | Action::TableNameChar(_)
+        | Action::TableNameBackspace
+        | Action::TableNameForwardDelete
+        | Action::TableNameCursorLeft
+        | Action::TableNameCursorRight
+        | Action::TableNameCursorStart
+        | Action::TableNameCursorEnd => Parity::UiOnly("editing a text field"),
         Action::MoveUp
         | Action::MoveDown
         | Action::PageUp
@@ -194,7 +204,10 @@ fn parity(action: &Action) -> Parity {
         | Action::DedupTiebreakerUp
         | Action::DedupTiebreakerDown
         | Action::JoinOverviewUp
-        | Action::JoinOverviewDown => Parity::UiOnly("moving through a list"),
+        | Action::JoinOverviewDown
+        | Action::SqlScroll(_)
+        | Action::SqlScrollHome
+        | Action::SqlScrollEnd => Parity::UiOnly("moving through a list"),
         Action::CancelWindowFnSelect
         | Action::CancelWindowDirSelect
         | Action::CancelWindowOrderSelect
@@ -210,6 +223,8 @@ fn parity(action: &Action) -> Parity {
         | Action::CancelPathGoto
         | Action::CancelQuery
         | Action::CancelSaveShape
+        | Action::CancelSql
+        | Action::CancelTableName
         | Action::CancelOpenAs
         | Action::CancelSave
         | Action::CancelZPrefix
@@ -274,7 +289,7 @@ fn parity(action: &Action) -> Parity {
         Action::OpenChart => Parity::UiOnly("a picture"),
         Action::ApplyChartAgg => Parity::UiOnly("a picture"),
         Action::OpenTypeSelect => Parity::UiOnly("opens a menu"),
-        Action::ApplyTypeSelect => Parity::UiOnly("column typing is a view concern"),
+        Action::ApplyTypeSelect => Parity::Gap(2),
         Action::ApplyCurrencySelect => Parity::UiOnly("column typing is a view concern"),
         Action::StartEdit => Parity::UiOnly("cell editing"),
         Action::ApplyEdit => Parity::UiOnly("cell editing"),
@@ -293,18 +308,26 @@ fn parity(action: &Action) -> Parity {
         Action::OpenAs => Parity::UiOnly("opens a menu"),
         Action::ApplyOpenAs => Parity::UiOnly("the server takes a format argument"),
         Action::ContractColumn => Parity::UiOnly("document projection is a view concern"),
-        Action::SaveFile => Parity::Shared("output.path"),
-        Action::ApplySave => Parity::Shared("output.path"),
+        Action::SaveFile => Parity::UiOnly("opens the save prompt"),
+        Action::ApplySave => Parity::Gap(3),
+        Action::ApplyTableName => Parity::Shared("output.table"),
+        // The terminal confirms a write with a keypress; the server confirms it with a
+        // handshake it cannot fake — tuitab_write returns the SQL and a plan id,
+        // tuitab_write_apply runs exactly that plan, and neither tool exists unless the
+        // server was started with --mcp-write.
+        Action::ApplySql => Parity::Shared("tuitab_write_apply"),
         Action::EnterZPrefix => Parity::UiOnly("a chord prefix"),
         Action::StartRenameColumn => Parity::UiOnly("opens an input"),
-        Action::ApplyRenameColumn => Parity::UiOnly("renaming is a view concern"),
+        // Renaming a sheet column is a view concern, but renaming a *table's* column
+        // reaches the server through tuitab_write's 'alter'.
+        Action::ApplyRenameColumn => Parity::Shared("tuitab_write's 'alter'"),
         Action::DeleteColumn => Parity::Composable("select, listing the columns to keep"),
         Action::StartInsertColumn => Parity::UiOnly("opens an input"),
-        Action::ApplyInsertColumn => Parity::UiOnly("cell editing"),
+        Action::ApplyInsertColumn => Parity::Shared("tuitab_write's 'alter'"),
         Action::SelectColumn => Parity::Shared("select"),
         Action::UnselectColumn => Parity::Shared("select"),
-        Action::MoveColumnLeft => Parity::UiOnly("column order is a view concern"),
-        Action::MoveColumnRight => Parity::UiOnly("column order is a view concern"),
+        Action::MoveColumnLeft => Parity::Gap(4),
+        Action::MoveColumnRight => Parity::Gap(4),
         Action::AdjustColumnWidth => Parity::UiOnly("widths are a view concern"),
         Action::AdjustAllColumnWidths => Parity::UiOnly("widths are a view concern"),
         Action::IncreasePrecision => Parity::UiOnly("display precision"),
@@ -317,13 +340,11 @@ fn parity(action: &Action) -> Parity {
         Action::StartColRegexpReplace => Parity::UiOnly("opens an input"),
         Action::StartColSplit => Parity::UiOnly("opens an input"),
         Action::ColFindConfirm => Parity::UiOnly("a two-step input"),
-        Action::ApplyColReplace => Parity::Gap("find & replace in a column has no MCP operation"),
-        Action::ApplyColSplit => {
-            Parity::Gap("splitting a column by a delimiter has no MCP operation")
-        }
+        Action::ApplyColReplace => Parity::Gap(0),
+        Action::ApplyColSplit => Parity::Gap(1),
         Action::ExitColumnMove => Parity::UiOnly("column order is a view concern"),
         Action::StartBulkEdit => Parity::UiOnly("cell editing"),
-        Action::ApplyBulkEdit => Parity::UiOnly("cell editing"),
+        Action::ApplyBulkEdit => Parity::Shared("tuitab_write's 'set'"),
         Action::OpenAggregatorSelect => Parity::UiOnly("opens a picker"),
         Action::ApplyAggregators => Parity::Composable("aggregate"),
         Action::ToggleAggregatorSelection => Parity::UiOnly("a picker"),
@@ -336,6 +357,11 @@ fn parity(action: &Action) -> Parity {
         Action::UnselectAllRows => Parity::UiOnly("row marking"),
         Action::ToggleAllSelection => Parity::UiOnly("row marking"),
         Action::PasteRows => Parity::UiOnly("clipboard"),
+        Action::PasteCell => Parity::UiOnly("clipboard"),
+        // A blank row to type into is a terminal idea, but the row itself reaches the
+        // server as tuitab_write's 'insert'.
+        Action::AddRowBelow => Parity::Shared("tuitab_write's 'insert'"),
+        Action::AddRowAbove => Parity::Shared("tuitab_write's 'insert'"),
         Action::DeleteSelectedRows => Parity::Composable("the inverse filter"),
         Action::EnterYPrefix => Parity::UiOnly("a chord prefix"),
         Action::CopyCurrentCell => Parity::UiOnly("clipboard"),
@@ -385,18 +411,27 @@ fn tui_reach(op: &Op) -> Parity {
         Op::Join(_) => Parity::Shared("J"),
         Op::Limit(_) => Parity::Composable("scrolling — a terminal shows what fits"),
     }
+    // No `Gap` arm is written above because there is nothing to put in one today.  The
+    // test below still has to be able to fail, so it matches on the verdict rather than
+    // trusting that this function never returns one.
 }
 
 // ── the declared state of the union ─────────────────────────────────────────
 
 /// Terminal actions that ought to be reachable from the server and are not.
 ///
-/// A list, not a count, so a new entry has to be spelled out and an old one
-/// disappears when it is closed. Both of these are column string operations
-/// that exist in `DataFrame` and simply have no pipeline operation yet.
+/// A list, not a count, so a new entry has to be spelled out and an old one disappears
+/// when it is closed. `Parity::Gap` indexes into this, so a gap classified without a
+/// declaration here panics rather than passing quietly.
 const KNOWN_GAPS: &[&str] = &[
     "find & replace in a column has no MCP operation",
     "splitting a column by a delimiter has no MCP operation",
+    "changing a database column's declared type has no MCP operation — `alter` adds, \
+     drops and renames, and `SchemaPlan::retypes` is only reachable from `t`",
+    "saving a database to another file copies every table, index and trigger; \
+     `output.path` writes one table from the current frame",
+    "reordering a table's columns has no MCP operation — the terminal rebuilds the \
+     table for it, so it is not a view concern",
 ];
 
 #[test]
@@ -433,14 +468,9 @@ fn every_server_operation_has_a_key() {
         Op::Transpose { row: None },
         Op::Limit(1),
     ] {
-        assert!(
-            !matches!(tui_reach(&op), Parity::Gap(_)),
-            "{} has no way to be invoked from the keyboard",
-            match tui_reach(&op) {
-                Parity::Gap(why) => why,
-                _ => unreachable!(),
-            }
-        );
+        if let Parity::Gap(i) = tui_reach(&op) {
+            panic!("{}: no way to invoke it from the keyboard", KNOWN_GAPS[i]);
+        }
     }
 }
 
@@ -448,11 +478,32 @@ fn every_server_operation_has_a_key() {
 /// line here and adding an operation — not adjusting a number.
 #[test]
 fn the_known_gaps_are_the_declared_ones() {
-    for (action, expected) in [
-        (Action::ApplyColReplace, KNOWN_GAPS[0]),
-        (Action::ApplyColSplit, KNOWN_GAPS[1]),
-    ] {
-        assert_eq!(parity(&action), Parity::Gap(expected));
+    // Every declared gap is claimed, and every claim points at a declared gap.  A gap
+    // that gets closed has to be deleted from both, and one that appears has to be
+    // added to both — neither can be done quietly.
+    let claimed = [
+        (Action::ApplyColReplace, 0),
+        (Action::ApplyColSplit, 1),
+        (Action::ApplyTypeSelect, 2),
+        (Action::ApplySave, 3),
+        (Action::MoveColumnLeft, 4),
+        (Action::MoveColumnRight, 4),
+    ];
+    for (action, i) in &claimed {
+        assert!(
+            *i < KNOWN_GAPS.len(),
+            "{:?} indexes past KNOWN_GAPS",
+            action
+        );
+        assert_eq!(parity(action), Parity::Gap(*i), "{:?}", action);
+    }
+    for (i, why) in KNOWN_GAPS.iter().enumerate() {
+        assert!(
+            claimed.iter().any(|(_, j)| *j == i),
+            "nothing produces gap {}: '{}' — delete it if it was closed",
+            i,
+            why
+        );
     }
 }
 
@@ -468,7 +519,8 @@ fn every_verdict_carries_a_reason() {
         Action::SearchNext,
     ] {
         let why = match parity(&action) {
-            Parity::UiOnly(w) | Parity::Shared(w) | Parity::Composable(w) | Parity::Gap(w) => w,
+            Parity::UiOnly(w) | Parity::Shared(w) | Parity::Composable(w) => w,
+            Parity::Gap(i) => KNOWN_GAPS[i],
         };
         assert!(
             !why.trim().is_empty(),

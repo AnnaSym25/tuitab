@@ -82,7 +82,11 @@ pub struct Sheet {
     // ── Search state (/) ──────────────────────────────────────────────────────
     pub search_input: TextInput,
     pub search_pattern: Option<String>,
-    pub search_col: Option<usize>,
+    /// The column the running search looks in, held by name.
+    ///
+    /// An index would go stale the moment a save drops a column to its left, and every
+    /// reader of it indexes straight into `columns`.  Same reasoning as `sort_keys`.
+    pub search_col_name: Option<String>,
 
     // ── Select by regex state (|) ─────────────────────────────────────────────
     pub select_regex_input: TextInput,
@@ -131,6 +135,12 @@ pub struct Sheet {
     pub xlsx_source_path: Option<std::path::PathBuf>,
     /// CSV/TSV delimiter byte used when loading this sheet.
     pub source_delimiter: Option<u8>,
+    /// The database table behind this sheet, when it was drilled into from one and can
+    /// still be written back to.  Carries the table name, the declared column types and
+    /// the values as loaded; see [`crate::data::io::db_write`].
+    ///
+    /// Needs no serde: `SheetStack::swap_out` replaces only `dataframe`.
+    pub table_source: Option<crate::data::io::db_write::TableSource>,
 
     // ── Pivot Table ───────────────────────────────────────────────────────────
     pub pivot_input: TextInput,
@@ -162,7 +172,7 @@ impl Sheet {
             sort_keys: Vec::new(),
             search_input: TextInput::new(),
             search_pattern: None,
-            search_col: None,
+            search_col_name: None,
             select_regex_input: TextInput::new(),
             path_input: TextInput::new(),
             query_input: TextInput::new(),
@@ -187,6 +197,7 @@ impl Sheet {
             dir_source_path: None,
             xlsx_db_path: None,
             xlsx_source_path: None,
+            table_source: None,
             pivot_input: TextInput::new(),
             sheet_type: SheetType::Normal,
             select_count_input: TextInput::new(),
@@ -298,12 +309,49 @@ impl Sheet {
             .collect()
     }
 
+    /// Carry the database a sheet came from onto one built out of its rows.
+    ///
+    /// A drill-down clones the frame and narrows `row_order`; the row identities inside
+    /// are untouched, so the new sheet *can* be written back — it just has to know which
+    /// table it belongs to.  Without this it looks like a sheet with no table behind it,
+    /// and saving it offers to create one out of the filtered rows, over the table it
+    /// was filtered from.
+    pub fn inherit_db_origin(&mut self, parent: &Sheet) {
+        self.table_source = parent.table_source.clone();
+        self.sqlite_source_path = parent.sqlite_source_path.clone();
+        self.duckdb_source_path = parent.duckdb_source_path.clone();
+        self.source_path = parent.source_path.clone();
+    }
+
+    /// Put the rows back in the sheet's sort order after its data was replaced.
+    ///
+    /// Keeping `sort_keys` across a reload without this would leave the headers claiming
+    /// an order the rows are not in.  Keys naming a column that is gone are dropped by
+    /// [`Self::resolved_sort_keys`].
+    pub fn reapply_sort(&mut self) {
+        let keys = self.resolved_sort_keys();
+        if !keys.is_empty() {
+            let _ = self.dataframe.sort_by_keys(&keys);
+        }
+    }
+
+    /// Which column the running search looks in, resolved now rather than remembered.
+    ///
+    /// Falls back to the cursor for a name that no longer resolves — a search still has
+    /// to search somewhere, and the cursor is where the user is looking.
+    pub fn search_col(&self) -> usize {
+        self.search_col_name
+            .as_deref()
+            .and_then(|n| self.dataframe.columns.iter().position(|c| c.name == n))
+            .unwrap_or(self.cursor_col)
+    }
+
     /// Reset the view after the table was rebuilt from scratch (a reprojection).  Sort
     /// and search state refer to columns that may no longer exist, so they go too.
     pub fn reset_view_state(&mut self) {
         self.sort_keys.clear();
         self.search_pattern = None;
-        self.search_col = None;
+        self.search_col_name = None;
         self.top_row = 0;
         self.left_col = 0;
         self.cursor_col = 0;
@@ -312,7 +360,8 @@ impl Sheet {
         self.clamp_cursor();
     }
 
-    fn clamp_cursor(&mut self) {
+    /// Pull the cursor back inside the table after something shrank it.
+    pub fn clamp_cursor(&mut self) {
         let cols = self.dataframe.columns.len();
         let rows = self.dataframe.visible_row_count();
         if self.cursor_col >= cols && cols > 0 {
@@ -422,6 +471,11 @@ impl SheetStack {
 
     /// Read a clone of the DataFrame one level below the active sheet (parent).
     /// Briefly swaps it in if it was on disk.
+    /// The sheet one below the active one, which is where a drill-down's rows came from.
+    pub fn parent(&self) -> Option<&Sheet> {
+        self.sheets.len().checked_sub(2).map(|i| &self.sheets[i])
+    }
+
     pub fn clone_parent_dataframe(&mut self) -> Option<DataFrame> {
         let depth = self.sheets.len();
         if depth < 2 {

@@ -118,6 +118,9 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
             // Clipboard & delete
             KeyCode::Char('y') => Action::EnterYPrefix,
             KeyCode::Char('p') => Action::PasteRows,
+            KeyCode::Char('P') => Action::PasteCell,
+            KeyCode::Char('o') => Action::AddRowBelow,
+            KeyCode::Char('O') => Action::AddRowAbove,
             KeyCode::Char('d') => Action::DeleteSelectedRows,
             // Derived sheet
             KeyCode::Char('"') => Action::CreateSheetFromSelection,
@@ -330,6 +333,33 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
             KeyCode::Home => Action::SearchCursorStart,
             KeyCode::End => Action::SearchCursorEnd,
             KeyCode::Char(c) => Action::SearchInput(c),
+            _ => Action::None,
+        },
+
+        // Enter here runs SQL against the user's database, so no catch-all dismiss and
+        // no catch-all accept: an unbound key does nothing.
+        AppMode::SqlConfirm => match key.code {
+            KeyCode::Up | KeyCode::Char('k') => Action::SqlScroll(-1),
+            KeyCode::Down | KeyCode::Char('j') => Action::SqlScroll(1),
+            KeyCode::PageUp => Action::SqlScroll(-10),
+            KeyCode::PageDown => Action::SqlScroll(10),
+            KeyCode::Char('g') | KeyCode::Home => Action::SqlScrollHome,
+            KeyCode::Char('G') | KeyCode::End => Action::SqlScrollEnd,
+            KeyCode::Enter => Action::ApplySql,
+            KeyCode::Esc | KeyCode::Char('q') => Action::CancelSql,
+            _ => Action::None,
+        },
+
+        AppMode::TableNameInput => match key.code {
+            KeyCode::Esc => Action::CancelTableName,
+            KeyCode::Enter => Action::ApplyTableName,
+            KeyCode::Backspace => Action::TableNameBackspace,
+            KeyCode::Delete => Action::TableNameForwardDelete,
+            KeyCode::Left => Action::TableNameCursorLeft,
+            KeyCode::Right => Action::TableNameCursorRight,
+            KeyCode::Home => Action::TableNameCursorStart,
+            KeyCode::End => Action::TableNameCursorEnd,
+            KeyCode::Char(c) => Action::TableNameChar(c),
             _ => Action::None,
         },
 

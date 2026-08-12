@@ -39,6 +39,11 @@ pub struct Cli {
     /// through tuitab's engine instead of computing over them itself.
     #[arg(long)]
     pub mcp: bool,
+
+    /// Allow the MCP server to change rows in a SQLite or DuckDB table. Off by
+    /// default: without it the write tools do not exist. Implies --mcp.
+    #[arg(long)]
+    pub mcp_write: bool,
 }
 
 pub fn run() -> Result<()> {
@@ -47,14 +52,14 @@ pub fn run() -> Result<()> {
 
     // Before anything else: the MCP transport owns stdin and stdout, so neither
     // the terminal detection below nor the /dev/tty juggling after it may run.
-    if cli.mcp {
+    if cli.mcp || cli.mcp_write {
         // Tools name their own files, so a path here does nothing.  Say so on
         // stderr — which the transport allows for logging — rather than let it
         // vanish.
         if !cli.files.is_empty() {
             eprintln!("tuitab: --mcp ignores file arguments; the model names the files it wants.");
         }
-        return mcp::serve();
+        return mcp::serve(cli.mcp_write);
     }
 
     use std::io::IsTerminal;
@@ -90,10 +95,9 @@ pub fn run() -> Result<()> {
             .into_iter()
             .next()
             .unwrap_or_else(|| std::path::PathBuf::from("."));
-        if !path.exists() {
-            eprintln!("Error: '{}': no such file or directory", path.display());
-            std::process::exit(1);
-        }
+        // A path that is not there is no longer an error: `App::new_as` opens it blank
+        // so a new file can be built from nothing.  It is also the one that refuses the
+        // cases that cannot work.
         let forced = cli
             .data_type
             .as_deref()

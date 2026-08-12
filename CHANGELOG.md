@@ -7,6 +7,344 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-12
+
+### Added
+
+- **The MCP server can now change a database table**, behind a flag and a
+  handshake. Start it with `--mcp-write` and two tools appear: `tuitab_write`
+  works out what a change would do and answers with the exact SQL, the rows it
+  would touch as they stand, and a plan id — writing nothing; `tuitab_write_apply`
+  runs precisely that plan, in one transaction, refusing if the table changed in
+  between. That pair is what replaces the terminal's confirmation popup, which a
+  model has no way to answer. Without the flag neither tool exists, and calling
+  one by name says which flag turns it on.
+
+  A change is one of `set`, `delete`, `insert` or `alter`, with `where` taking
+  the same predicates as `tuitab_query`'s filter. A JSON `null` writes a real
+  NULL. `delete` always needs a `where` — emptying a table is not something a
+  missing argument can ask for. Underneath it is the terminal's own machinery, so
+  a change tuitab would refuse in the TUI is refused here for the same reason and
+  with the same sentence.
+- **`tuitab_inspect` now says what a database actually declares**: each column's
+  SQL type, NOT NULL, PRIMARY KEY, DEFAULT and whether it is generated, alongside
+  the type tuitab inferred. The container listing gained per-table row and column
+  counts and the `CREATE` statement, so finding the right table no longer costs a
+  call per table.
+- **Views are listed and readable** in both engines, and marked as not writable.
+  DuckDB could not read one at all before.
+- **`output.table`** names the table a query writes into a `.sqlite`/`.duckdb`
+  file, so a model can build a database of several tables. Adding a table beside
+  existing ones needs nothing extra; replacing one still needs `output.overwrite`.
+
+- **A database can now be built from nothing.** `tuitab inventory.sqlite` on a
+  file that does not exist opens a blank sheet — one empty column, titled
+  `[new]` — instead of exiting with an error. Add columns with `zi`, give them
+  types with `t`, add rows with `o` (below the cursor) and `O` (above), type the
+  values, and `Ctrl+S` creates the file. It asks what to call the table,
+  defaulting to the filename, then writes a real typed table: an Integer column
+  is declared `INTEGER` and stores integers, a NULL stays NULL, and the rows go
+  in the order the sheet shows them. Works for `.duckdb` too, which had no
+  writer at all before.
+
+  Creating into a database that already exists adds a table to it rather than
+  refusing — the table is named explicitly, so it is a deliberate act. Replacing
+  a table that is already there shows the `DROP TABLE` in the confirmation popup
+  first. Once written, the sheet adopts the table it just made, so the next
+  `Ctrl+S` is an ordinary writeback with its usual confirmation.
+
+  A path whose directory does not exist, or whose extension tuitab cannot write
+  (including no extension at all), is still an error — those are what a typo
+  looks like.
+- **`o` and `O` add an empty row** below and above the cursor, vim-style. Until
+  now the only way to add a row was pasting tab-separated text from the
+  clipboard. The cells start as NULL, so an untouched one reaches a database as
+  NULL rather than as an empty string.
+
+- **Schema changes reach the database too.** Adding a column (`zi`, `=`, `zx`),
+  dropping one (`zd`) and renaming one (`ze`) used to block the save outright;
+  they now become `ALTER TABLE` statements in the same confirmation popup as the
+  row changes, run in the same transaction, ordered so they cannot collide with
+  each other — drops, then renames, then adds, then the rows. A new column is
+  created with the type the sheet is showing and filled with its current values,
+  so a computed column arrives as ordinary data. On DuckDB, changing a column's
+  type with `t` becomes `ALTER COLUMN … TYPE`; SQLite has no such statement and
+  says so rather than pretending.
+
+  What a column *is* is tracked, not what happened to it: each column remembers
+  the name it had in the table, so renaming twice is one `RENAME COLUMN` and not
+  two, renaming a column you added in this session is just an `ADD COLUMN`, and a
+  `zr` find-and-replace — which sets the column to text as a side effect — never
+  turns into a type change.
+
+  Before anything runs, a drop that the engine would reject is refused with a
+  sentence instead: the primary key, a column an index is built on, a column a
+  view or trigger names. Retyping to a percentage, currency or file size is
+  refused outright — those are ways of *displaying* a number (a percentage is
+  stored divided by 100), and writing one back would silently rescale the
+  column.
+- **Reordering columns, and changing a type on SQLite, rebuild the table.**
+  Neither engine can move a column, and SQLite has no `ALTER COLUMN` at all, so
+  both mean creating the table again with the shape the sheet has and copying the
+  rows across. The popup says so before the user confirms and shows every
+  statement including the `DROP TABLE`; indexes and triggers are recreated from
+  their own definitions, `rowid`s are copied explicitly so nothing loses its
+  identity, and foreign keys are checked before the transaction commits.
+
+  The synthesized `CREATE TABLE` carries names, types, NOT NULL, DEFAULT and a
+  single-column primary key — and nothing else, so anything else is a refusal
+  rather than a guess: a CHECK, a UNIQUE, a multi-column key, a collation,
+  `AUTOINCREMENT`, `WITHOUT ROWID`, `STRICT`, a generated column, a foreign key
+  in either direction, or a view built on the table. Adding a column is not a
+  reason to rebuild: `ADD COLUMN` appends, as everywhere else, and the sheet
+  reloads to show where it landed.
+
+- **`show_statements`** on `tuitab_write`: the plan still returns the first
+  twenty statements by default, but a model asked to show the user everything can
+  now request up to two hundred.
+
+- **`P` pastes the clipboard into the cell under the cursor.** `y c` copies a
+  cell and `p` only ever appended rows, so the obvious round trip — copy a value,
+  put it somewhere else — had no key and failed with a type error instead. `P`
+  takes the clipboard's first line and writes it exactly as typing it with `e`
+  would: the same type check, the same document write-back, the same undo entry.
+
+### Changed
+
+- **Database columns arrive with the types their table declares.** Every value
+  comes back from both engines as text, so a column was a string column and
+  `score > 100` was a comparison polars refused outright — numeric filtering over
+  a database did not work at all. Columns declared as integers and reals are now
+  cast to them, per column and best-effort, since SQLite lets an `INTEGER` column
+  hold text and such a column is still worth reading. `BOOLEAN` deliberately
+  stays text: SQLite stores it as the integers 1 and 0, and a boolean column
+  would render `true` where the re-read database says `1`.
+
+  The drift check that guards a write now compares the *number* rather than its
+  spelling for such columns — DuckDB renders a `DOUBLE` `1.0` as `"1.0"` where
+  Rust gives `"1"` — which also removes a fragility that predated this: a change
+  of float rendering between engine versions would have reported drift on rows
+  nobody touched.
+- **Typing a value a column cannot hold no longer discards it.** The cast back
+  into the column was non-strict, so `abc` in an integer column became a silent
+  NULL; it now stays visible as text and the save refuses it by name.
+- **A database source needs a `container`.** Reading one without a table named
+  used to hand back a listing dressed up as data, including raw `CREATE TABLE`
+  text, while the server's own instructions said there was no SQL anywhere.
+  `tuitab_inspect` gives that listing properly.
+- **Exporting to SQLite writes a real table, not a dump.** It used to create one
+  called `data` with every column declared `TEXT` and every value formatted the
+  way the screen shows it — a currency column arrived as `'$1 234,50'` — writing
+  row by row with no transaction. It now asks for the table name, declares the
+  types the sheet shows, writes raw values in one transaction, and keeps NULL
+  apart from an empty string. Through the MCP server the table is named
+  `result`; it used to be `data`.
+- **Pinning a column (`!`) no longer moves it.** It used to walk the column to
+  the front of the frame one swap at a time, which the renderer never needed —
+  it builds the pinned block from the flag. Two consequences: unpinning now
+  restores the original order (with two columns pinned at once it did not), and
+  keeping a column in sight while scrolling is no longer indistinguishable from
+  asking for the table's columns to be reordered. Pinned columns are no longer
+  written first when exporting to CSV, xlsx, parquet or Arrow.
+
+- **A SQLite or DuckDB table can now be edited and saved back.** Editing a
+  database table used to be a dead end: the sheet took the edits and there was
+  nowhere to put them. `Ctrl+S` onto the file the table came from now derives
+  the change set — `UPDATE` for edited cells, `DELETE` for removed rows,
+  `INSERT` for pasted ones — shows every statement it is about to run, and
+  executes them in one transaction only after confirmation. Rows sharing an edit
+  collapse into a single `UPDATE … WHERE rowid IN (…)`, so a bulk edit reads as
+  one statement rather than five thousand. Nothing else in the file is touched:
+  other tables, indexes, views and triggers are exactly as they were, and
+  unchanged rows are never rewritten.
+
+  Rows are addressed by `rowid`, captured at load and kept out of the table.
+  Before anything is written, the affected rows are re-read inside the same
+  transaction and compared against the values as loaded; if the table changed
+  underneath — another tool, another tuitab sheet — the save is refused with
+  what differs and nothing is written. Values are parsed into the column's
+  declared type first, so `'abc'` in an `INTEGER` column stops the save before
+  any SQL exists, naming the column and the row on screen.
+
+  Saving to a *different* `.db` copies the whole database first (`VACUUM INTO`
+  for SQLite, `CHECKPOINT` plus a file copy for DuckDB) and applies the same
+  statements to the copy, leaving the original alone. No confirmation there —
+  there is nothing of the user's to lose, which is also why the destination has
+  to be a file that does not exist yet rather than one that is about to stop
+  existing.
+
+  Operations that renumber rows or change the column set — a window column,
+  transpose, pivot, join, group-by, dropping or renaming a column, retyping one
+  — make an in-place write impossible, and saying so is better than guessing:
+  the save is refused with the reason and a pointer to "save to a different
+  file".
+- **NULL is now visible and typable.** SQLite and DuckDB loaders used to turn
+  NULL into an empty string, which made the two indistinguishable on screen and
+  silently converted one into the other on the way back. A NULL cell now renders
+  as a dim italic `NULL`, opening it for editing shows `\N`, and typing `\N`
+  means SQL NULL. An emptied cell stays an empty string in a text column and
+  becomes NULL in a numeric one, which is the only reading `''` has there. The
+  sentinel is read only on sheets that came from a database: a CSV has no null
+  to mean, and a JSON sheet edits its document tree, where those two characters
+  are just two characters.
+- **Arrow / Feather files** open and save (`.arrow`, `.feather`, `.ipc`).
+- **A save into a database keeps the sheet as the user arranged it.** Pins,
+  widths, aggregators, precision, currency and column selection now survive the
+  reload that follows a write; so do the sort and the running search, which are
+  remembered by column name and therefore unbothered by a save that dropped a
+  column. A type assigned by hand with `t` comes back too, along with the tag
+  that tells the next save the column is a reading of the data rather than the
+  data. The filter is still cleared — the rows may not be the same rows — and the
+  row selection is restored by row identity rather than by position, so a save
+  that deleted rows above it does not move it.
+- **The SQL confirmation stops keeping readable text past 2000 statements** and
+  says how many it is not showing. Those statements still run; what changes is
+  that a whole-table edit no longer holds a second copy of the data purely so a
+  popup can display it.
+
+### Fixed
+
+- **Copying left the clipboard empty on Linux.** Every copy opened its own
+  clipboard connection and closed it on the way out — but on X11 and Wayland the
+  text is not stored anywhere, it is served by the process that set it over that
+  very connection. So the status line said the value was copied and there was
+  nothing to paste, in tuitab or anywhere else. tuitab now holds one clipboard
+  for the life of the process. (X11 being X11, the content still goes when tuitab
+  exits unless a clipboard manager keeps it. macOS was never affected.)
+- **`y c` copied the cell as it is drawn, not as it is.** A float column is shown
+  to two decimals, so copying `1234.5678` yielded `1234.57` — invisible until the
+  value was pasted back into a table. The single-cell copy now takes the raw
+  value, the same one `e` puts in the edit line; a NULL in a database sheet
+  copies as `\N` and pastes back as a real NULL. Yanking rows or a whole column
+  through the format popup is a display-form export and is unchanged.
+- **A pasted row shorter than the table no longer fails the whole paste.** A
+  field the pasted line does not have was read as the empty string, which is not
+  a number, so one missing trailing column refused every row with
+  `column 'amount' holds f64`. A missing field is now NULL, which is what it is.
+  A paste that does fail no longer eats an undo entry either.
+- **A negative currency could not be typed or pasted back.** It is displayed in
+  brackets — `($5.00)` — and read back through a filter that keeps only digits,
+  a dot and a minus, so the brackets went and the value came back positive. The
+  sign is now taken from the brackets before they are stripped.
+- **`Ctrl+S` on a table opened from a database always failed.** The save dialog
+  fell back to the sheet title and offered `/path/db.sqlite :: users` as the
+  filename, whose extension parses as `.sqlite :: users` — so every save ended
+  in `Unsupported save format`. Such a sheet now knows the file it came from.
+  Sheets opened from an `.xlsx` had the same defect and the same fix.
+- **Exporting onto an existing database would have dropped a table into it.**
+  `save_sqlite` runs `DROP TABLE IF EXISTS data` before writing, which was
+  harmless while database files were never the default save target and is not
+  now. It refuses a file that already holds any other table.
+- **A save of nothing but new rows ran without a single check.** The column-shape
+  check was conditional on the plan changing the schema, and the drift check only
+  ever looks at rows that already exist, so an INSERT-only plan went to the
+  database blind. The shape check now runs on every write.
+- **A BLOB column was editable, and editing one stored six letters.** The sheet
+  shows a marker where the bytes are; writing that back would have replaced an
+  image with a description of it. Editing such a column is refused by name, and
+  the rest of the row still saves. The marker now carries the size
+  (`[BLOB 5 bytes]`), so the drift check notices a blob swapped for one of a
+  different length.
+- **Reordering the columns of a DuckDB table with a generated column** rebuilt it
+  as an ordinary one and copied the computed values in. DuckDB's catalogue has no
+  flag for it, but its stored `CREATE TABLE` does, so the rebuild is refused the
+  same way SQLite's already was.
+- **Saving a view — or a `WITHOUT ROWID` table — back into its own file** fell
+  through to the *create a table* branch and offered `DROP TABLE` on the thing it
+  had just been read from. On a `WITHOUT ROWID` table that would have succeeded,
+  replacing it with a plain one. It is refused with a sentence; saving elsewhere
+  still works.
+- **A find-and-replace no longer leaves a type change behind.** `t` → Integer
+  then `zr` showed a String column while planning `ALTER COLUMN … TYPE INTEGER`,
+  which on SQLite means rebuilding the whole table for nothing.
+- **Two writers no longer collide instantly.** SQLite connections take the write
+  lock up front and wait a few seconds for another writer, instead of returning
+  `database is locked` the moment two saves overlap; DuckDB, which allows one
+  process at a time and cannot wait, now says so in a sentence.
+- **The `.db` extension names no engine, and is no longer guessed at.** Every
+  reader and writer now asks the file's own header, so a DuckDB database called
+  `data.db` opens in the terminal and over MCP alike, and a table written into an
+  existing file speaks that file's dialect.
+- **Swapping two column names now takes one save.** It used to be refused with a
+  suggestion to do it in two; the plan parks one column under a scratch name and
+  unwinds the cycle in three statements.
+- **`R` on a sheet whose file has gone** cleared the undo history before finding
+  out the reload would fail. It now clears nothing until there are rows to put in
+  place of the old ones.
+- **A row added with `o` no longer jumps to the bottom** when the sort is reset —
+  it goes back to where it was inserted.
+- **A write through MCP's `output.path` invalidates the server's cache**, so
+  inspecting the file it just wrote no longer answers from a frame taken before
+  the write.
+- **`Ctrl+S` on the overview of a database wrote the database's own table listing
+  back into it as a table** — and, when the name it suggested happened to be
+  free, without showing a single statement first. The sheet then became that
+  table, and it was the root sheet, so there was nowhere to go back to. Saving
+  the overview into its own file is refused; exporting it elsewhere still works.
+- **A drilled-into sheet offered to create a table out of the rows it was
+  filtered to**, over the table they came from. Such a sheet now carries the
+  table it came from, so saving it is an ordinary writeback of the rows it shows.
+  The same applies to a drill-down out of a chart.
+- **Replacing a table said nothing about what the `DROP TABLE` took with it.**
+  The popup now lists the indexes and triggers that will be lost and the views
+  that will break, and replacing a table another table has a foreign key into is
+  refused outright — that one leaves the database itself inconsistent.
+- **`t` → Date on a text column of timestamps wrote the truncated dates back.**
+  The sheet parses `2024-01-01 09:30:00` down to the day and turns anything it
+  cannot read into NULL; saving then wrote that reading into the table. Such a
+  column is no longer written at all, and the sheet says so instead of doing it
+  quietly. `t` → Boolean on a `BOOLEAN` column, which used to plan an UPDATE of
+  every row to write `true` where the table already said `1`, now plans nothing —
+  while a real edit in either column still reaches the database.
+- **MCP's `output.path` could change a database without `--mcp-write`**, with no
+  plan to read and no drift check, and with `output.overwrite` it could drop a
+  table. Writing into a database file that already exists now needs the flag; a
+  file that does not exist yet is still created without it. It also cannot write
+  into the file the query read, and replacing a name that belongs to a view is
+  refused in words rather than by the engine mid-transaction.
+- **A failed `tuitab_write` left the previous plan applicable.** Calling it now
+  retires the pending plan whatever happens next, and the answer names the plan
+  it replaced, so `tuitab_write_apply` cannot run something the conversation has
+  moved on from.
+- **`alter` ignored anything it did not recognise** and answered "no change" — a
+  typo, or asking for a retype or a reorder, looked like a table that was already
+  in the requested shape. Unknown keys are refused by name.
+- **The MCP cache did not notice a commit made through a write-ahead log.** Both
+  engines commit into a file beside the database, so a change by another process
+  left the main file's timestamp alone and a query could keep answering with
+  pre-commit rows. The cache now stamps the companions and the size too, and an
+  unreadable file counts as a miss rather than a match.
+- **A declared `format` of `sqlite`, `parquet` or `xlsx` was accepted and then
+  ignored** — the override only ever covered the document formats, so
+  `{"path": "a.csv", "format": "parquet"}` quietly read the file as CSV.
+- **Any failure to read a table's rowid made it look like a view.** A locked file
+  or an unreadable page came back as a read-only sheet, and the model was told
+  the table was a view. Only "there is no rowid here" falls back now. Likewise, a
+  catalogue query that fails no longer invents an unconstrained text column for
+  every column in the table, which had been silently switching off the NOT NULL,
+  DEFAULT and generated-column checks built on it.
+- **DuckDB's rebuild preflight was missing three checks SQLite's had** — a
+  foreign key pointing into the table, a view built on it, and a leftover scratch
+  table from an interrupted run.
+- **MCP's `output.table` was validated trimmed and used untrimmed**, so `"  x  "`
+  passed the check and created a table with the spaces in its name, and
+  `output.path` did not expand `~`, creating a directory called `~` instead.
+- **A generated column in DuckDB was treated as ordinary data.** No catalogue
+  says which columns are computed — `duckdb_columns()` has no such field and
+  `information_schema` leaves both `is_generated` and the expression NULL — but
+  the stored `CREATE TABLE` does, and it is read now. Editing one is refused by
+  name and a new row no longer lists it, the way both have always worked on
+  SQLite.
+- **`output.path` is checked before the query runs.** An extension nothing can
+  write, or a directory that is not there, used to surface only after the joins
+  and group-bys had been computed.
+- **Errors from the engines reach the model with no idea what failed.** A polars
+  complaint about shapes, an io error from a write, a jq parse failure — all
+  arrived bare. Each now says what was being attempted, while tuitab's own
+  refusals still arrive verbatim: those are written to be read.
+- **The MCP frame cache held one file**, so comparing two of them re-read both on
+  every call. It holds four now, newest first.
+
 ## [0.7.0] - 2026-08-04
 
 ### Fixed
@@ -502,7 +840,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Non-English keyboard remapping
 - Three binary aliases: `tuitab`, `ttab`, `tt`
 
-[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/denisotree/tuitab/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/denisotree/tuitab/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/denisotree/tuitab/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/denisotree/tuitab/compare/v0.4.3...v0.5.0

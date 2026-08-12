@@ -6,6 +6,8 @@ use polars::prelude::*;
 use std::fs::File;
 use std::path::Path;
 
+mod arrow;
+pub mod db_write;
 mod directory;
 pub mod doc_io;
 mod duckdb;
@@ -16,11 +18,42 @@ mod sqlite;
 mod txt;
 
 pub use directory::{load_directory, load_files_list};
-pub use duckdb::{duckdb_table_names, load_duckdb_overview, load_duckdb_table_by_name};
+pub use duckdb::{
+    duckdb_table_names, load_duckdb_overview, load_duckdb_table_by_name, load_duckdb_table_full,
+};
 pub use excel::{excel_sheet_names, load_excel_overview, load_excel_sheet_by_name};
-pub use sqlite::{load_sqlite_overview, load_sqlite_table_by_name, sqlite_table_names};
+pub use sqlite::{
+    load_sqlite_overview, load_sqlite_table_by_name, load_sqlite_table_full, sqlite_table_names,
+};
 
 pub use directory::format_file_size_pub;
+
+/// One table or view of a database, as the catalogue describes it.
+///
+/// The same query answers the terminal's overview sheet and the MCP server's container
+/// listing, so the two cannot disagree about what a file holds.
+#[derive(Clone, Debug)]
+pub struct ContainerInfo {
+    pub name: String,
+    pub view: bool,
+    /// `None` for a view: counting its rows means running it, and listing what a file
+    /// holds should not execute somebody's ten-million-row query.
+    pub rows: Option<i64>,
+    pub columns: usize,
+    /// The `CREATE TABLE` / `CREATE VIEW` the database keeps.
+    pub sql: Option<String>,
+}
+
+/// Tables and views of a database, whichever engine it is.
+///
+/// The engine comes from the file's header rather than its name — see
+/// [`db_write::kind_for_path`].
+pub fn db_containers(path: &Path) -> Result<Vec<ContainerInfo>> {
+    match db_write::kind_for_path(path) {
+        db_write::DbKind::Sqlite => sqlite::sqlite_containers(path),
+        db_write::DbKind::DuckDb => duckdb::duckdb_containers(path),
+    }
+}
 
 pub fn load_file(path: &Path, delimiter: Option<u8>) -> Result<DataFrame> {
     load_file_with_doc(path, delimiter).map(|(df, _)| df)
@@ -64,6 +97,9 @@ pub fn load_file_as(
             | "tsv"
             | "txt"
             | "parquet"
+            | "arrow"
+            | "feather"
+            | "ipc"
             | "xlsx"
             | "xls"
             | "db"
@@ -86,21 +122,23 @@ pub fn load_file_as(
     load_tabular(path, delimiter, &ext).map(|df| (df, None))
 }
 
-fn load_tabular(path: &Path, delimiter: Option<u8>, ext: &str) -> Result<DataFrame> {
+/// Read a file as `ext` says, whatever it happens to be called.
+pub(crate) fn load_tabular(path: &Path, delimiter: Option<u8>, ext: &str) -> Result<DataFrame> {
     match ext {
         "csv" | "tsv" => crate::data::loader::load_csv(path, delimiter),
         "txt" => txt::load_txt(path),
         "parquet" => parquet::load_parquet(path),
+        "arrow" | "feather" | "ipc" => arrow::load_arrow(path),
         "xlsx" | "xls" => excel::load_excel(path),
-        "db" => sqlite::load_sqlite_overview(path).or_else(|_| duckdb::load_duckdb_overview(path)),
-        "sqlite" | "sqlite3" => sqlite::load_sqlite_overview(path),
-        "duckdb" | "ddb" => duckdb::load_duckdb_overview(path),
+        // Not the extension: `.db` names no engine at all, and a name is only ever a
+        // claim.  `kind_for_path` reads the file's own header and falls back to the
+        // extension for one that does not exist yet — the same answer the writer uses.
+        "db" | "sqlite" | "sqlite3" | "duckdb" | "ddb" => match db_write::kind_for_path(path) {
+            db_write::DbKind::DuckDb => duckdb::load_duckdb_overview(path),
+            db_write::DbKind::Sqlite => sqlite::load_sqlite_overview(path),
+        },
         _ => Err(eyre!("Unsupported file format: .{}", ext)),
     }
-}
-
-pub fn save_file(df: &DataFrame, path: &Path) -> Result<()> {
-    save_file_as(df, None, path, doc_io::Shape::Records, "rows")
 }
 
 /// Save to `path`, choosing the writer from its extension.
@@ -109,6 +147,10 @@ pub fn save_file(df: &DataFrame, path: &Path) -> Result<()> {
 /// written by re-serialising that tree, so the original structure survives and
 /// converting between formats is just picking a different extension.  A sheet with no
 /// tree behind it (CSV, Parquet, SQL, pivot) is first turned into a tree using `shape`.
+///
+/// For a database target `sheet_name` is the name of the table to create.  The TUI asks
+/// for it and never reaches here; the MCP server has nowhere to ask, so it passes its
+/// own.
 pub fn save_file_as(
     df: &DataFrame,
     doc: Option<&doc_io::DocState>,
@@ -134,10 +176,41 @@ pub fn save_file_as(
         "csv" => save_csv(df, path, b','),
         "tsv" => save_csv(df, path, b'\t'),
         "parquet" => parquet::save_parquet(df, path),
-        "db" | "sqlite" | "sqlite3" => sqlite::save_sqlite(df, path),
+        "arrow" | "feather" | "ipc" => arrow::save_arrow(df, path),
+        // The engine comes from the file when there is one — adding a table to an
+        // existing database has to speak that database's dialect, whatever it is called.
+        "db" | "sqlite" | "sqlite3" | "duckdb" | "ddb" => {
+            db_write::create_table(db_write::kind_for_path(path), path, sheet_name, df)
+        }
         "xlsx" | "xls" => excel::save_xlsx(df, path),
         _ => Err(eyre!("Unsupported save format: .{}", ext)),
     }
+}
+
+/// Whether [`save_file_as`] has a writer for this extension.
+///
+/// The same list, so a caller can ask *before* doing the work that produces the rows —
+/// finding out the target is unwritable after a join and a group-by has run is a waste
+/// the answer was always going to be able to prevent.
+pub fn writable_ext(ext: &str) -> bool {
+    let ext = ext.to_lowercase();
+    crate::data::doc::Format::from_ext(&ext).is_some()
+        || matches!(
+            ext.as_str(),
+            "csv"
+                | "tsv"
+                | "parquet"
+                | "arrow"
+                | "feather"
+                | "ipc"
+                | "db"
+                | "sqlite"
+                | "sqlite3"
+                | "duckdb"
+                | "ddb"
+                | "xlsx"
+                | "xls"
+        )
 }
 
 pub fn load_from_stdin_typed(data_type: &str, delimiter: Option<u8>) -> Result<DataFrame> {
