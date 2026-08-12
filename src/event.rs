@@ -117,8 +117,8 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
             KeyCode::Char('z') => Action::EnterZPrefix,
             // Clipboard & delete
             KeyCode::Char('y') => Action::EnterYPrefix,
-            KeyCode::Char('p') => Action::PasteRows,
-            KeyCode::Char('P') => Action::PasteCell,
+            KeyCode::Char('p') => Action::PasteCell,
+            KeyCode::Char('P') => Action::PasteRows,
             KeyCode::Char('o') => Action::AddRowBelow,
             KeyCode::Char('O') => Action::AddRowAbove,
             KeyCode::Char('d') => Action::DeleteSelectedRows,

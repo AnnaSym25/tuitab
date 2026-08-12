@@ -278,7 +278,7 @@ impl App {
         }
     }
 
-    /// `P` — paste the clipboard's first line into the cell under the cursor.
+    /// `p` — paste the clipboard's first line into the cell under the cursor.
     /// Routed through the same write as `e`, so typing, document write-back, undo and
     /// the error message are whatever editing that cell by hand would give.
     pub(super) fn paste_cell(&mut self) {

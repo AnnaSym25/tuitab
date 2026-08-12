@@ -52,8 +52,8 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect) {
         Line::from("  y → Z             Entire current column → format popup"),
         Line::from("  y → R             Entire table → format popup"),
         Line::from("  (yr, yR respect column selection via zs)"),
-        Line::from("  p                 Paste rows"),
-        Line::from("  P                 Paste into the cell under the cursor"),
+        Line::from("  p                 Paste into the cell under the cursor"),
+        Line::from("  P                 Paste rows"),
         Line::from(""),
         Line::from(Span::styled(
             "── Column Operations (z prefix) ────────",

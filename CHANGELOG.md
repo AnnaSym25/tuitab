@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-12
+
+### Changed
+
+- **`p` and `P` have swapped.** `p` pastes into the cell under the cursor and
+  `P` pastes rows — the way round that matches how often each is wanted. In
+  0.8.0 the cell paste arrived on `P`, which put the rarer operation on the
+  easier key.
+
 ## [0.8.0] - 2026-08-12
 
 ### Added
@@ -840,7 +849,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Non-English keyboard remapping
 - Three binary aliases: `tuitab`, `ttab`, `tt`
 
-[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/denisotree/tuitab/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/denisotree/tuitab/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/denisotree/tuitab/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/denisotree/tuitab/compare/v0.5.0...v0.6.0

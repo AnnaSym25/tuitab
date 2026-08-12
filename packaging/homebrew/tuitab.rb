@@ -19,26 +19,26 @@ class Tuitab < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/denisotree/tuitab/releases/download/v0.8.0/tuitab-v0.8.0-aarch64-apple-darwin.tar.gz"
-      sha256 "cda4838dc8094dc6027cdc3256cb3fb2e2c48bb534ac84e7f6e80eb8a67feb68"
-      version "0.8.0"
+      url "https://github.com/denisotree/tuitab/releases/download/v0.8.1/tuitab-v0.8.1-aarch64-apple-darwin.tar.gz"
+      sha256 "FILL_IN_AFTER_RELEASE"
+      version "0.8.1"
     end
     on_intel do
-      url "https://github.com/denisotree/tuitab/releases/download/v0.8.0/tuitab-v0.8.0-x86_64-apple-darwin.tar.gz"
-      sha256 "ba815ac5f328918cc3d5818b4be8d29785b48285ca4c5679614028e78f63e2c5"
-      version "0.8.0"
+      url "https://github.com/denisotree/tuitab/releases/download/v0.8.1/tuitab-v0.8.1-x86_64-apple-darwin.tar.gz"
+      sha256 "FILL_IN_AFTER_RELEASE"
+      version "0.8.1"
     end
   end
   on_linux do
     on_arm do
-      url "https://github.com/denisotree/tuitab/releases/download/v0.8.0/tuitab-v0.8.0-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "4bc7f13378e0e68bc24a4d32fc1899fc190ad3e82d5eb88fbbf4a98ac184ad71"
-      version "0.8.0"
+      url "https://github.com/denisotree/tuitab/releases/download/v0.8.1/tuitab-v0.8.1-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "FILL_IN_AFTER_RELEASE"
+      version "0.8.1"
     end
     on_intel do
-      url "https://github.com/denisotree/tuitab/releases/download/v0.8.0/tuitab-v0.8.0-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "91a2d661952b8bf433bbbbd64fd2a60840f447bbc23bc05b1c93647d2b784fc4"
-      version "0.8.0"
+      url "https://github.com/denisotree/tuitab/releases/download/v0.8.1/tuitab-v0.8.1-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "FILL_IN_AFTER_RELEASE"
+      version "0.8.1"
     end
   end
 

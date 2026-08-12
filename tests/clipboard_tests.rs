@@ -32,13 +32,13 @@ fn a_copied_cell_can_be_pasted_into_another_cell() {
     );
 
     app.stack.active_mut().table_state.select(Some(1));
-    key(&mut app, KeyCode::Char('P'));
+    key(&mut app, KeyCode::Char('p'));
     let df = &app.stack.active().dataframe;
     let salary = df.column_index("salary").unwrap();
     assert_eq!(
         df.get_editable(1, salary),
         "75000",
-        "P must write the clipboard into the cell under the cursor, got: {}",
+        "p must write the clipboard into the cell under the cursor, got: {}",
         app.status_message
     );
 

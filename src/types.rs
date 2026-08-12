@@ -451,8 +451,8 @@ pub enum Action {
     ToggleAllSelection, // 'gt' — toggle: select all if not all selected, else unselect all
 
     // ── Clipboard & row operations ────────────────────────────────────────────
-    PasteRows, // 'p' — paste rows from clipboard
-    PasteCell, // 'P' — paste clipboard text into the cell under the cursor
+    PasteRows, // 'P' — paste rows from clipboard
+    PasteCell, // 'p' — paste clipboard text into the cell under the cursor
     /// Add an empty row below / above the cursor (`o` / `O`)
     AddRowBelow,
     AddRowAbove,

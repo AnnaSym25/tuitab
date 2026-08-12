@@ -241,7 +241,7 @@ fn a_null_copied_from_a_cell_pastes_back_as_a_null() {
     assert_eq!(tuitab::clipboard::paste_from_clipboard().unwrap(), "\\N");
 
     app.stack.active_mut().table_state.select(Some(2)); // cara: note = 'hi'
-    key(&mut app, KeyCode::Char('P'));
+    key(&mut app, KeyCode::Char('p'));
     assert_eq!(
         app.stack.active().dataframe.get_editable(2, note),
         "\\N",
