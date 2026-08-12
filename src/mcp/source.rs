@@ -261,14 +261,14 @@ pub fn containers(path: &Path, ext: &str) -> Option<Vec<io::ContainerInfo>> {
         return io::db_containers(path).ok().filter(|c| !c.is_empty());
     }
     match ext {
-        "xlsx" | "xls" => io::excel_sheet_names(path).ok().map(|names| {
-            names
+        "xlsx" | "xls" => io::excel_sheet_sizes(path).ok().map(|sheets| {
+            sheets
                 .into_iter()
-                .map(|name| io::ContainerInfo {
+                .map(|(name, rows, columns)| io::ContainerInfo {
                     name,
                     view: false,
-                    rows: None,
-                    columns: 0,
+                    rows: Some(rows as i64),
+                    columns,
                     sql: None,
                 })
                 .collect()

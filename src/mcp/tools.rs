@@ -117,12 +117,17 @@ LARGE OR SHAREABLE RESULTS
 Set output.path to write the result to a file instead of returning rows: \
 .xlsx, .csv, .tsv, .parquet, .arrow, .json, .jsonl, .yaml, .toml, .sqlite, .duckdb. \
 That file is formatted for a person to read. Use it whenever the user wants a \
-deliverable, or when a result is too big to return. For .sqlite and .duckdb, \
-output.table names the table (default 'result'). Adding a table to a database leaves \
-the tables already in it alone and needs nothing extra, so several writes can build up \
-one file. Replacing a table that is already there destroys its rows: that needs both \
-output.overwrite and the server to have been started with --mcp-write. The file a query \
-read cannot be the file it writes.
+deliverable, or when a result is too big to return. A path that does not exist yet is \
+written in one call. Replacing a file that is already there destroys it, so it takes \
+output.overwrite and a server started with --mcp-write, and the call plans rather than \
+writes: it answers with what the old file is and a plan id, and nothing happens until \
+that plan is applied. For .sqlite and .duckdb, \
+output.table names the table (default 'result'). Adding a table to a database is not \
+replacing anything — the tables already in it are untouched — so it needs nothing \
+extra, and several writes can build up one file. Replacing a table follows the same \
+rule as replacing a file: output.overwrite, --mcp-write, and a plan holding the DROP, \
+CREATE and INSERT statements to be applied. The file a query read cannot be the file \
+it writes.
 
 NESTED DATA
 tuitab_query flattens JSON/YAML/TOML into a table. When the structure is deeper \
@@ -141,8 +146,11 @@ This server was started with writing enabled, so two more tools exist. They work
      {\"alter\": {\"add\": [{\"name\":\"tier\",\"type\":\"text\"}], \"drop\": [\"old\"], \"rename\": {\"nm\":\"name\"}}}
    'where' takes the same predicates as tuitab_query's filter, and omitting it on \
    'set' changes every row — the plan tells you how many that is. 'delete' always \
-   needs a 'where'. A JSON null writes a real NULL. Columns left out of an insert are \
-   written as NULL, not as the column's DEFAULT.
+   needs a 'where'. A JSON null in 'set' writes a real NULL. On 'insert' a column with \
+   no value — left out, or given null — is left out of the statement, so the schema's \
+   DEFAULT runs; a column with no DEFAULT is NULL. A DEFAULT therefore wins over an \
+   explicit null on insert, and forcing NULL into a defaulted column is not expressible \
+   here: insert the row, then 'set' that column to null.
    It answers with the exact statements, how many rows they touch, those rows as they \
    stand now, and a plan_id. Long plans are cut short: 'statements' holds the first \
    twenty, 'statements_total' and 'statements_not_shown' say how many there are, and \
@@ -153,8 +161,13 @@ This server was started with writing enabled, so two more tools exist. They work
 3. tuitab_write_apply with that plan_id runs exactly those statements, all of them or \
    none. If the table changed since step 1, nothing is written and you start over.
 
-One change per call, and calling tuitab_write again discards the previous plan. Raw SQL \
-is still not available. alter adds, drops and renames columns; changing an existing \
+tuitab_query's output.overwrite goes through the same two steps, for a table and for \
+a plain file alike: replacing something that already exists answers with a plan_id and \
+what is about to be lost — for a table the DROP, CREATE and INSERT statements and the \
+rows it holds now, for a file its size — and tuitab_write_apply is what performs it.
+
+One change per call, and any new plan — from either tool — discards the previous one. \
+Raw SQL is still not available. alter adds, drops and renames columns; changing an existing \
 column's type and reordering columns are only in the terminal.";
 
 /// The documentation the model gets, with the writing half only when it applies.
@@ -351,7 +364,7 @@ fn write_tool_schema(source_schema: &Value) -> Value {
                 "insert": {
                     "type": "array",
                     "description":
-                        "New rows, each an object of column name to value. Columns left out are                          written as NULL, not as the column's DEFAULT.",
+                        "New rows, each an object of column name to value. A column with no value — left out, or null — is omitted from the INSERT, so the schema's DEFAULT applies; without a DEFAULT it is NULL. To force NULL into a defaulted column, insert the row and then 'set' it.",
                     "items": {"type": "object"},
                     "maxItems": 1000
                 },
@@ -604,30 +617,40 @@ fn output_arg(args: &Value) -> Output {
     }
 }
 
+/// One question as it arrived: its name, and either the operations it asks for or the
+/// reason they could not be read.
+type Requested = (Option<String>, Result<Vec<pipeline::Op>, String>);
+
 fn query(server: &mut Server, args: &Value) -> Result<Value, CallError> {
     let src = source_arg(args)?;
     let output = output_arg(args);
 
     // Accept a single `ops` array as well as `pipelines` — a model asking one
     // question should not have to wrap it in a list.
-    let pipelines: Vec<(Option<String>, Vec<pipeline::Op>)> = match args.get("pipelines") {
-        Some(Value::Array(items)) => {
-            let mut parsed = Vec::with_capacity(items.len());
-            for (i, item) in items.iter().enumerate() {
+    // A pipeline that will not parse is kept as its error rather than raised: the point
+    // of asking several questions in one call is that one file is read once, and a
+    // typo in the fourth question used to throw away the three answers beside it.
+    let pipelines: Vec<Requested> = match args.get("pipelines") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
                 let name = item.get("name").and_then(Value::as_str).map(str::to_string);
                 let ops = pipeline::parse_ops(item.get("ops").unwrap_or(&Value::Null))
-                    .map_err(|e| CallError::Failed(format!("pipelines[{}]: {}", i, e)))?;
-                parsed.push((name, ops));
-            }
-            parsed
-        }
+                    .map_err(|e| format!("pipelines[{}]: {}", i, e));
+                (name, ops)
+            })
+            .collect(),
+        // One question, on the other hand, still fails the call: a caller that asked
+        // for a single thing and got `{"error": ...}` back as a success would have to
+        // learn a second way of finding out that nothing worked.
+        //
+        // No ops at all is the table as it stands.  Copying one into another file is
+        // a whole operation on its own, and it used to need a made-up `limit` big
+        // enough not to cut anything — a guess that silently truncates when wrong.
         _ => match args.get("ops") {
-            Some(ops) => vec![(None, pipeline::parse_ops(ops)?)],
-            None => {
-                return Err(CallError::Failed(
-                    "provide either 'ops' or 'pipelines'".to_string(),
-                ))
-            }
+            Some(ops) => vec![(None, Ok(pipeline::parse_ops(ops)?))],
+            None => vec![(None, Ok(Vec::new()))],
         },
     };
 
@@ -674,12 +697,24 @@ fn query(server: &mut Server, args: &Value) -> Result<Value, CallError> {
     let base = source::load(server, &src)?;
     let mut results = Vec::with_capacity(pipelines.len());
 
+    let mut failures = 0usize;
     for (index, (name, ops)) in pipelines.iter().enumerate() {
         let label = name
             .clone()
             .unwrap_or_else(|| format!("pipeline_{}", index));
-        let (df, seeds) = pipeline::apply_all_reporting_seeds(base.clone(), ops)
-            .map_err(|e| CallError::Failed(format!("{}: {}", label, e)))?;
+        let outcome = match ops {
+            Err(why) => Err(why.clone()),
+            Ok(ops) => pipeline::apply_all_reporting_seeds(base.clone(), ops)
+                .map_err(|e| format!("{}: {}", label, e)),
+        };
+        let (df, seeds) = match outcome {
+            Ok(pair) => pair,
+            Err(why) => {
+                failures += 1;
+                results.push(json!({"name": label, "error": why}));
+                continue;
+            }
+        };
 
         let mut entry = match &output.path {
             Some(path) => {
@@ -687,11 +722,11 @@ fn query(server: &mut Server, args: &Value) -> Result<Value, CallError> {
                 // after would answer from a snapshot taken before the write.
                 server.cache.clear();
                 write_result(
+                    server,
                     &df,
                     path,
                     output.table.as_deref(),
                     output.overwrite,
-                    server.write,
                     &src.path,
                 )?
             }
@@ -717,6 +752,16 @@ fn query(server: &mut Server, args: &Value) -> Result<Value, CallError> {
         results.push(entry);
     }
 
+    // Every question failing is a failed call, whichever form it took: a caller that
+    // gets `isError: false` back has been told the work was done.
+    if failures == results.len() {
+        let why: Vec<String> = results
+            .iter()
+            .filter_map(|r| r.get("error").and_then(Value::as_str).map(str::to_string))
+            .collect();
+        return Err(CallError::Failed(why.join("; ")));
+    }
+
     Ok(if results.len() == 1 {
         results.pop().expect("length checked")
     } else {
@@ -730,13 +775,14 @@ fn query(server: &mut Server, args: &Value) -> Result<Value, CallError> {
 /// saver formats Currency, Percentage and Float columns for a reader, which is
 /// right for a file someone opens and wrong for JSON a model computes over.
 fn write_result(
+    server: &mut Server,
     df: &crate::data::dataframe::DataFrame,
     path: &std::path::Path,
     table: Option<&str>,
     overwrite: bool,
-    write_enabled: bool,
     source: &std::path::Path,
 ) -> Result<Value, CallError> {
+    let write_enabled = server.write;
     use crate::data::io::db_write;
 
     let table = table.unwrap_or("result");
@@ -773,11 +819,22 @@ fn write_result(
                 )));
             }
             if !overwrite {
+                // Named with what it holds: a refusal that only names the flag reads as
+                // an instruction to re-send with the flag, and the caller decides that
+                // without ever learning what it was about to destroy.
+                let holds = crate::data::io::db_containers(path)
+                    .ok()
+                    .and_then(|cs| cs.into_iter().find(|c| c.name == table))
+                    .and_then(|c| c.rows)
+                    .map(|n| format!(" and holds {} rows", n))
+                    .unwrap_or_default();
                 return Err(CallError::Failed(format!(
-                    "'{}' already exists in {}. Pass output.overwrite to replace it, or \
-                     choose another table name.",
+                    "'{}' already exists in {}{}. Replacing it destroys them: pass \
+                     output.overwrite only if the user asked for that, or choose another \
+                     table name to write beside it.",
                     table,
-                    path.display()
+                    path.display(),
+                    holds
                 )));
             }
             if db_write::is_view(kind, path, table) {
@@ -788,12 +845,38 @@ fn write_result(
                     path.display()
                 )));
             }
+            // Replacing is the destructive case, and the destructive case is planned
+            // and applied rather than done — the same handshake `tuitab_write` uses,
+            // for a change that destroys more than any `set` can.
+            return super::write::plan_replacement(server, df, path, table);
         }
-    } else if path.exists() && !overwrite {
-        return Err(CallError::Failed(format!(
-            "{} already exists. Pass output.overwrite to replace it, or choose another path.",
-            path.display()
-        )));
+    } else if path.exists() {
+        // A file somebody already has is theirs, whatever its extension: replacing it
+        // destroys it as surely as dropping a table, so it is gated the same way and
+        // planned the same way.  Writing a path that does not exist yet stays one call —
+        // there is nothing there to lose.
+        let size = std::fs::metadata(path)
+            .map(|m| format!(" ({} bytes)", m.len()))
+            .unwrap_or_default();
+        if !write_enabled {
+            return Err(CallError::Failed(format!(
+                "{} already exists{}, and replacing a file the user already has needs \
+                 the server to be started with --mcp-write. Write to a path that does \
+                 not exist instead.",
+                path.display(),
+                size
+            )));
+        }
+        if !overwrite {
+            return Err(CallError::Failed(format!(
+                "{} already exists{}. Replacing it destroys what is there: pass \
+                 output.overwrite only if the user asked for that, or choose another \
+                 path.",
+                path.display(),
+                size
+            )));
+        }
+        return super::write::plan_file_overwrite(server, df, path, table);
     }
 
     crate::data::io::save_file_as(
@@ -805,12 +888,21 @@ fn write_result(
     )
     .map_err(|e| CallError::Failed(format!("Could not write {}: {}", path.display(), e)))?;
 
-    Ok(json!({
+    let mut written = json!({
         "written": path.to_string_lossy(),
         "row_count": df.row_order.len(),
         "columns": render::columns_json(df),
-        "note": "Values in the file are formatted for reading (currency symbols, fixed decimals).",
-    }))
+    });
+    // A spreadsheet or a csv is written for a person to read, and the currency symbols
+    // and fixed decimals in it say so.  A database is written for the next query: the
+    // columns are typed, NULL stays NULL, and telling the caller otherwise makes a
+    // perfectly good table look unfit to query.
+    if !db_write::is_db_ext(path) {
+        written["note"] = json!(
+            "Values in the file are formatted for reading (currency symbols, fixed decimals)."
+        );
+    }
+    Ok(written)
 }
 
 // ── tuitab_describe ─────────────────────────────────────────────────────────

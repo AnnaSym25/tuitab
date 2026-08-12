@@ -71,9 +71,12 @@ cat data.csv | tuitab -t csv      # read from a pipe
 - **MCP server** — `tuitab --mcp` exposes the same engine to an AI assistant, so it
   computes over your data instead of guessing at it. It reads databases properly:
   tables *and* views, with each column's declared SQL type, keys and defaults.
-  Add `--mcp-write` and it can change a table too — but only in two steps, the
-  first of which returns the exact SQL and writes nothing, so the assistant has
-  to show you what it is about to run.
+  Add `--mcp-write` and it can change things too — rows in a table, a table
+  replaced wholesale, a file overwritten — but never in one call: the first
+  returns the exact statements and what they would destroy, and writes nothing,
+  so the assistant has to show you what it is about to run. Creating something
+  that does not exist yet needs no flag and no handshake; there is nothing there
+  to lose.
 
 ---
 
@@ -207,6 +210,9 @@ Options:
   -d, --delimiter <CHAR>   Column delimiter (auto-detected if omitted)
   -t, --type <FORMAT>      Format when reading from stdin: csv, tsv, txt, json
       --mcp                Run as an MCP server on stdio (see below)
+      --mcp-write          Let that server change what already exists — rows,
+                           a whole table, a file. Off by default; every such
+                           change is shown first and applied by name
   -h, --help               Print help
   -V, --version            Print version
 ```
@@ -243,8 +249,14 @@ claude mcp add tuitab -- tuitab --mcp
 Four tools: `tuitab_inspect` (columns, types, row count, sample rows),
 `tuitab_query` (fifteen operations composed as a pipeline — filter, group by,
 window functions, pivot, join, dedup and the rest — returning JSON or writing
-xlsx/csv/parquet), `tuitab_describe` (per-column statistics), and `tuitab_jq`
-(jq programs over nested JSON/YAML/TOML).
+xlsx/csv/parquet/sqlite), `tuitab_describe` (per-column statistics), and
+`tuitab_jq` (jq programs over nested JSON/YAML/TOML). Several questions can share
+one call, and one of them failing does not cost the answers beside it.
+
+Two more appear with `--mcp-write`: `tuitab_write` works out what a change would
+do and answers with the exact SQL, the rows it would touch and a plan id —
+writing nothing — and `tuitab_write_apply` runs precisely that plan, in one
+transaction, refusing if the table moved underneath it.
 
 There is no SQL and no arbitrary code: the model sends structured operations,
 each mapping onto a function tuitab already had, and gets back numbers Polars

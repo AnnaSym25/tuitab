@@ -31,9 +31,23 @@ const MAX_INSERT: usize = 1000;
 /// A plan waiting for its second call.
 pub struct Pending {
     pub id: String,
-    pub plan: WritePlan,
-    pub src: TableSource,
+    pub work: Work,
     pub container: String,
+}
+
+/// What a waiting plan would do.
+///
+/// One slot holds both kinds, because the invariant is about the conversation and not
+/// about the target: exactly one plan is applicable, whichever tool made it.
+pub enum Work {
+    /// Statements against a table — a change, or the wholesale replacement of one.
+    Table { plan: WritePlan, src: TableSource },
+    /// A file that would be overwritten by a computed result.  The rows are held here
+    /// because they are the plan: there is no SQL to keep instead.
+    File {
+        path: std::path::PathBuf,
+        df: DataFrame,
+    },
 }
 
 /// What the caller asked to change.
@@ -224,9 +238,130 @@ pub fn plan(server: &mut Server, args: &Value) -> Result<Value, CallError> {
     });
     server.pending = Some(Pending {
         id,
-        plan,
-        src: source,
+        work: Work::Table { plan, src: source },
         container,
+    });
+    Ok(out)
+}
+
+/// Plan the replacement of a whole table by a query's result, and write nothing.
+///
+/// `output.overwrite` destroys more than any `set` ever does — the previous table
+/// entire, and with it the indexes, triggers and views that hung off it — so it goes
+/// through the same handshake: the statements exist, the caller reads them back, and
+/// `tuitab_write_apply` runs precisely them.  There is no human at the keyboard to
+/// catch a model that answered a refusal by re-sending it with the flag set; a second
+/// deliberate call is the only thing that does not depend on the model behaving.
+pub fn plan_replacement(
+    server: &mut Server,
+    df: &DataFrame,
+    path: &std::path::Path,
+    table: &str,
+) -> Result<Value, CallError> {
+    let displaced = server.pending.take().map(|p| p.id);
+    let kind = db_write::kind_for_path(path);
+    // What is about to be lost, read before anything is planned: the count is the whole
+    // point of the sentence the model has to relay.
+    let losing = crate::data::io::db_containers(path)
+        .ok()
+        .and_then(|cs| cs.into_iter().find(|c| c.name == table))
+        .and_then(|c| c.rows);
+    let (plan, src) = db_write::create_plan(kind, path, table, df)
+        .map_err(|e| CallError::Failed(e.to_string()))?;
+
+    server.plan_seq += 1;
+    let id = format!("write-{}", server.plan_seq);
+    let shown: Vec<&str> = plan
+        .stmts
+        .iter()
+        .take(DEFAULT_SHOWN)
+        .filter(|s| !s.display.is_empty())
+        .map(|s| s.display.as_str())
+        .collect();
+    let out = json!({
+        "plan_id": id,
+        "summary": plan.summary(),
+        "replaces": {
+            "table": table,
+            "path": path.to_string_lossy(),
+            "rows_now": losing,
+            "rows_after": df.row_order.len(),
+        },
+        "schema": plan.schema,
+        "inserts": plan.inserts,
+        "statements": shown,
+        "statements_total": plan.stmts.len(),
+        "statements_not_shown": plan.stmts.len().saturating_sub(shown.len()),
+        "warnings": plan.warnings,
+        "note": note_with_displaced(
+            &format!(
+                "Nothing has been written. Replacing '{}' drops the table that is there \
+                 now. Tell the user what it holds, then call tuitab_write_apply with \
+                 plan_id '{}' to run exactly these statements.",
+                table, id
+            ),
+            displaced.as_deref(),
+        ),
+    });
+    server.pending = Some(Pending {
+        id,
+        work: Work::Table { plan, src },
+        container: table.to_string(),
+    });
+    Ok(out)
+}
+
+/// Plan the overwriting of a file that already exists, and write nothing.
+///
+/// A report somebody has is no less theirs than a table, and `output.overwrite` used to
+/// replace one in a single call — the file is gone before anybody could be told what it
+/// was.  Same handshake, same reason: with no person at the keyboard, a second
+/// deliberate call is the only gate a model cannot talk itself through.
+pub fn plan_file_overwrite(
+    server: &mut Server,
+    df: &DataFrame,
+    path: &std::path::Path,
+    sheet: &str,
+) -> Result<Value, CallError> {
+    let displaced = server.pending.take().map(|p| p.id);
+    let meta = std::fs::metadata(path).ok();
+    let bytes = meta.as_ref().map(|m| m.len());
+    let modified = meta
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+
+    server.plan_seq += 1;
+    let id = format!("write-{}", server.plan_seq);
+    let out = json!({
+        "plan_id": id,
+        "summary": format!("overwrite {}", path.display()),
+        "replaces": {
+            "path": path.to_string_lossy(),
+            "bytes_now": bytes,
+            "modified_unix": modified,
+            "rows_after": df.row_order.len(),
+        },
+        "columns": render::columns_json(df),
+        "note": note_with_displaced(
+            &format!(
+                "Nothing has been written. {} exists and would be replaced entirely. \
+                 Tell the user what is about to be overwritten, then call \
+                 tuitab_write_apply with plan_id '{}' to write it.",
+                path.display(),
+                id
+            ),
+            displaced.as_deref(),
+        ),
+    });
+    server.pending = Some(Pending {
+        id,
+        work: Work::File {
+            path: path.to_path_buf(),
+            df: df.clone(),
+        },
+        container: sheet.to_string(),
     });
     Ok(out)
 }
@@ -475,26 +610,64 @@ pub fn apply(server: &mut Server, args: &Value) -> Result<Value, CallError> {
             )));
         }
         None => {
-            return Err(CallError::Failed(format!(
-                "No plan '{}' is waiting. Call tuitab_write to make one.",
-                wanted
-            )))
+            // A plan this server once handed out is a different situation from one it
+            // never made: it was superseded by a later plan or spent by a write, and
+            // "call tuitab_write to make one" reads as if it had never existed.  The id
+            // is a counter, so no bookkeeping is needed to tell the two apart.
+            let issued = wanted
+                .strip_prefix("write-")
+                .and_then(|n| n.parse::<u64>().ok())
+                .is_some_and(|n| (1..=server.plan_seq).contains(&n));
+            return Err(CallError::Failed(if issued {
+                format!(
+                    "Plan '{}' is no longer valid: a later plan or a write that has \
+                     already run replaced it. Call tuitab_write again for a plan against \
+                     the table as it stands now.",
+                    wanted
+                )
+            } else {
+                format!(
+                    "No plan '{}' is waiting. Call tuitab_write to make one.",
+                    wanted
+                )
+            }));
         }
     };
 
-    db_write::apply(&pending.src, &pending.plan).map_err(|e| CallError::Failed(e.to_string()))?;
+    let out = match &pending.work {
+        Work::Table { plan, src } => {
+            db_write::apply(src, plan).map_err(|e| CallError::Failed(e.to_string()))?;
+            json!({
+                "applied": true,
+                "path": src.db_path.to_string_lossy(),
+                "container": pending.container,
+                "summary": plan.summary(),
+                "schema": plan.schema,
+                "updates": plan.updates,
+                "inserts": plan.inserts,
+                "deletes": plan.deletes,
+            })
+        }
+        Work::File { path, df } => {
+            crate::data::io::save_file_as(
+                df,
+                None,
+                path,
+                crate::data::io::doc_io::Shape::Records,
+                &pending.container,
+            )
+            .map_err(|e| CallError::Failed(format!("Could not write {}: {}", path.display(), e)))?;
+            json!({
+                "applied": true,
+                "written": path.to_string_lossy(),
+                "row_count": df.row_order.len(),
+                "summary": format!("overwrote {}", path.display()),
+            })
+        }
+    };
     // The cached frame predates the write; leaving it would let the next inspect answer
     // with values that are no longer there.
     server.cache.clear();
 
-    Ok(json!({
-        "applied": true,
-        "path": pending.src.db_path.to_string_lossy(),
-        "container": pending.container,
-        "summary": pending.plan.summary(),
-        "schema": pending.plan.schema,
-        "updates": pending.plan.updates,
-        "inserts": pending.plan.inserts,
-        "deletes": pending.plan.deletes,
-    }))
+    Ok(out)
 }

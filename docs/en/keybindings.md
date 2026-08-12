@@ -111,7 +111,8 @@ See [Expressions](expressions.md) for the `|!=` filter language.
 | `yz` | Copy the cursor column for the selected rows — pick a format |
 | `yZ` | Copy the entire cursor column — pick a format |
 | `yR` | Copy the entire table — pick a format |
-| `p` | Paste rows from the clipboard |
+| `p` | Paste the clipboard into the cell under the cursor |
+| `P` | Paste rows from the clipboard |
 
 Row/table copies offer **TSV · CSV · JSON · Markdown**; column copies offer
 newline-, comma-, or quoted-comma-separated. `yr` and `yR` respect columns

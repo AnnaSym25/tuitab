@@ -116,6 +116,86 @@ pub fn parse_ops(value: &Value) -> Result<Vec<Op>, String> {
         .collect()
 }
 
+/// The keys each operation understands, for the ones whose body is a record.
+///
+/// A key that is not here was a mistake, and dropping it in silence sends the caller
+/// looking in the wrong place: `aggregate` written for `agg` was ignored, and the
+/// failure arrived a step later as "grouping needs at least one aggregate" — the one
+/// thing the caller had in fact supplied.  `filter`, `select` and `aggregate` take
+/// arrays and `limit` a number, so they have nothing to check.
+fn known_keys(op: &str) -> Option<&'static [&'static str]> {
+    Some(match op {
+        "compute" => &["name", "expr"],
+        "group_by" | "frequency" => &["by", "agg"],
+        "pivot" => &["index", "on", "formula"],
+        "dedup" => &["by", "keep", "on", "seed"],
+        "duplicates" => &["by"],
+        "window" => &["fn", "col", "over", "order_by", "as", "desc", "offset"],
+        "sample" => &["n", "seed"],
+        "transpose" => &["row"],
+        "join" => &["source", "path", "left_on", "right_on", "how"],
+        "sort" => &["col", "desc", "by"],
+        _ => return None,
+    })
+}
+
+/// How close two key names are, for "did you mean" — a plain edit distance, capped.
+fn close_enough(a: &str, b: &str) -> bool {
+    // `aggregate` for `agg` is the mistake that prompted this, and no edit distance
+    // small enough to be useful reaches across six characters — but one name being the
+    // start of the other is as good a signal as they come.
+    if a.starts_with(b) || b.starts_with(a) {
+        return true;
+    }
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    if a.len().abs_diff(b.len()) > 3 {
+        return false;
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut row = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            row.push((row[j] + 1).min(prev[j + 1] + 1).min(prev[j] + cost));
+        }
+        prev = row;
+    }
+    prev[b.len()] <= 3
+}
+
+fn check_keys(op: &str, body: &Value) -> Result<(), String> {
+    let Some(allowed) = known_keys(op) else {
+        return Ok(());
+    };
+    if body.is_array() {
+        return Err(format!(
+            "'{}' takes an object like {{\"{}\": ...}}, not a list",
+            op, allowed[0]
+        ));
+    }
+    let Some(obj) = body.as_object() else {
+        return Ok(());
+    };
+    for key in obj.keys() {
+        if allowed.contains(&key.as_str()) {
+            continue;
+        }
+        let suggestion = allowed
+            .iter()
+            .find(|a| close_enough(key, a))
+            .map(|a| format!(" (did you mean '{}'?)", a))
+            .unwrap_or_default();
+        return Err(format!(
+            "'{}' has no field '{}'{}. It takes: {}",
+            op,
+            key,
+            suggestion,
+            allowed.join(", ")
+        ));
+    }
+    Ok(())
+}
+
 fn parse_op(value: &Value) -> Result<Op, String> {
     let obj = value
         .as_object()
@@ -129,6 +209,7 @@ fn parse_op(value: &Value) -> Result<Op, String> {
     }
 
     let (name, body) = obj.iter().next().expect("checked len == 1");
+    check_keys(name, body)?;
 
     match name.as_str() {
         "filter" => Ok(Op::Filter(parse_predicates(body)?)),

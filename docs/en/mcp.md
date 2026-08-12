@@ -55,9 +55,10 @@ printf '%s\n' \
  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | tuitab --mcp
 ```
 
-The second reply lists four tools. In Claude Code, `/mcp` shows the same thing.
+The second reply lists the tools — four, or six with `--mcp-write`. In Claude
+Code, `/mcp` shows the same thing.
 
-## The four tools
+## The tools
 
 | Tool | What it answers |
 |------|-----------------|
@@ -68,6 +69,11 @@ The second reply lists four tools. In Claude Code, `/mcp` shows the same thing.
 
 `tuitab_inspect` comes first in any session. Column names guessed from a file
 name are wrong often enough to cost a round trip.
+
+Started with `--mcp-write`, the server has two more — `tuitab_write` and
+`tuitab_write_apply` — and everything under [Changing what already
+exists](#changing-what-already-exists) applies. Without the flag they do not
+exist at all, and asking for one by name says which flag turns it on.
 
 ## Operations
 
@@ -123,6 +129,33 @@ To compare two columns, give a column where a constant would go:
 ```
 
 SQL's `HAVING` is a `filter` placed after `group_by`.
+
+`ops` may be left out entirely, and then the result is the table as it stands —
+which is what copying one file into another asks for.
+
+A column whose name has a space in it is written in backticks inside an
+expression: `` {"compute": {"name": "pay", "expr": "`amount due` * 1.2"}} ``.
+Double quotes are a *text literal*, so `"amount due" * 1.2` is arithmetic on the
+words rather than the column; it is refused rather than answered with a column of
+nulls. `"3" * 1` still works — that is the way to read a number out of a text
+column.
+
+### Several questions in one call
+
+`pipelines` runs a list of them against one load of the file:
+
+```json
+{"source": {"path": "/data/sales.csv"},
+ "pipelines": [
+   {"name": "by_region", "ops": [{"frequency": {"by": ["region"]}}]},
+   {"name": "totals",    "ops": [{"aggregate": [{"col": "amount", "fn": "sum"}]}]}
+ ]}
+```
+
+The answer is `{"results": [...]}`, each entry carrying its `name`. One pipeline
+failing does not take the others with it — that entry holds an `error` and the
+rest hold their rows. A call whose every pipeline failed is an error, and so is a
+single `ops` call that fails.
 
 ### Window functions
 
@@ -183,11 +216,76 @@ Rows come back as arrays matching the `columns` list:
 {"output": {"path": "/data/report.xlsx"}}
 ```
 
-The extension picks the format — `.xlsx`, `.csv`, `.tsv`, `.parquet`, `.json`,
-`.jsonl`, `.yaml`, `.toml`, `.sqlite`. Unlike the JSON above, that file *is*
-formatted for a person: currency symbols, fixed decimals.
+The extension picks the format — `.xlsx`, `.csv`, `.tsv`, `.parquet`, `.arrow`,
+`.json`, `.jsonl`, `.yaml`, `.toml`, `.sqlite`, `.duckdb`. Unlike the JSON above,
+a file meant for reading *is* formatted for a person: currency symbols, fixed
+decimals. A database is not — it is written for the next query, with its columns
+typed and NULL left as NULL.
 
 Use it for anything the user wants to keep, and for results too large to return.
+
+For `.sqlite` and `.duckdb`, `output.table` names the table (default `result`):
+
+```json
+{"output": {"path": "/data/shop.db", "table": "products"}}
+```
+
+Adding a table leaves every other table in the file alone, so a database can be
+built up over several calls with nothing extra required.
+
+## Changing what already exists
+
+Creating is one call. **Changing something the user already has — a table, or a
+file — takes `--mcp-write`, and happens in two steps.** The first says exactly
+what would happen and writes nothing; the second performs precisely that.
+
+The reason is the shape of the client: a model cannot be shown the terminal's
+confirmation popup, and where it runs unattended there is nobody to read the
+answer either. A second, deliberate call is the only gate that does not depend on
+the model behaving.
+
+**Rows in a table** — `tuitab_write` plans, `tuitab_write_apply` performs:
+
+```json
+{"source": {"path": "/data/shop.db", "container": "orders"},
+ "set": {"status": "archived"},
+ "where": [{"col": "id", "op": "in", "value": [3, 7, 11]}]}
+```
+
+comes back with the statements, `rows_matched`, those rows as they stand now, and
+a `plan_id`. Read them to the user, then:
+
+```json
+{"plan_id": "write-1"}
+```
+
+One change per call: `set`, `delete` (which always needs a `where`), `insert`, or
+`alter` for adding, dropping and renaming columns. The filter resolves to real
+rowids rather than being pasted into SQL, and `apply` refuses if the table has
+changed since the plan was made — nothing is written and you start over. Any new
+plan discards the previous one.
+
+On `insert`, a column with no value — left out, or given `null` — is left out of
+the statement, so the schema's `DEFAULT` runs; a column with no `DEFAULT` is
+NULL. A `DEFAULT` therefore beats an explicit `null`; to force NULL into a
+defaulted column, insert the row and then `set` it.
+
+**A whole table, or a file** — the same handshake, entered through `output`:
+
+```json
+{"output": {"path": "/data/shop.db", "table": "products", "overwrite": true}}
+```
+
+Replacing a table answers with the `DROP`, `CREATE` and `INSERT` statements, how
+many rows the old table holds against how many the new one will, and warnings for
+every index, trigger and view that goes with it. Overwriting a plain file answers
+with its size and when it was last written. Neither writes anything until
+`tuitab_write_apply` runs the plan.
+
+Without `output.overwrite` the refusal says what is at stake — `'inventory'
+already exists and holds 47 rows` — rather than naming the flag that would do it.
+
+A query cannot write into the file it read.
 
 ## Things that catch people out
 
@@ -214,7 +312,9 @@ computed. That is a deliberate limit, not an unfinished one: an operation
 validated against a schema fails loudly when it is wrong, where a mistyped SQL
 string quietly returns the wrong number.
 
-Not supported: subqueries, self-joins, and SQL of any kind.
+Not supported: subqueries, self-joins, and SQL of any kind. The model never
+writes SQL even when changing a table — tuitab composes the statements and shows
+them, and the model's part is to relay them and apply the plan by name.
 
 ## Where the documentation lives
 

@@ -1287,6 +1287,7 @@ impl DataFrame {
                 name
             ));
         }
+        expr.check_text_arithmetic(&|s| self.column_index(s).is_ok())?;
 
         // Fast path: Try using Polars Lazy API
         if let Ok(polars_expr) = expr.to_polars_expr() {
@@ -1890,6 +1891,7 @@ impl DataFrame {
             group_by_cols.push(pivot_col.to_string());
         }
 
+        formula.check_text_arithmetic(&|s| self.column_index(s).is_ok())?;
         let polars_formula = formula.to_polars_expr()?;
 
         let grouped = visible

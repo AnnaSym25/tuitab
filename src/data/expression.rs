@@ -154,6 +154,67 @@ impl Expr {
         Ok(expr)
     }
 
+    /// Refuse text that arithmetic can only turn into NULL.
+    ///
+    /// `"3" * 1` is a real conversion and stays; `"К выплате" * 1` is someone reaching
+    /// for a column and getting a string literal, which Polars answers with a column of
+    /// nulls and no error at all — the worst thing a query engine can do.  Only the
+    /// arithmetic operators are checked: a string against `==` or `in` is the ordinary
+    /// way to compare, whatever the columns happen to be called.
+    pub fn check_text_arithmetic(&self, is_column: &dyn Fn(&str) -> bool) -> Result<(), String> {
+        let complain = |s: &String| -> Result<(), String> {
+            if s.parse::<f64>().is_ok() {
+                return Ok(());
+            }
+            Err(if is_column(s) {
+                format!(
+                    "'{}' in double quotes is a text literal, not the column of that \
+                     name — arithmetic on it can only produce NULL. Write it in \
+                     backticks: `{}`",
+                    s, s
+                )
+            } else {
+                format!(
+                    "'{}' is text and cannot be part of a calculation. If a column is \
+                     meant, write its name in backticks: `{}`",
+                    s, s
+                )
+            })
+        };
+        match self {
+            Expr::BinOp { op, left, right } => {
+                if matches!(op, Op::Add | Op::Sub | Op::Mul | Op::Div) {
+                    for side in [left, right] {
+                        if let Expr::Literal(Value::String(s)) = side.as_ref() {
+                            complain(s)?;
+                        }
+                    }
+                }
+                left.check_text_arithmetic(is_column)?;
+                right.check_text_arithmetic(is_column)
+            }
+            Expr::FunctionCall { args, .. } => args
+                .iter()
+                .try_for_each(|a| a.check_text_arithmetic(is_column)),
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                cond.check_text_arithmetic(is_column)?;
+                then_branch.check_text_arithmetic(is_column)?;
+                else_branch.check_text_arithmetic(is_column)
+            }
+            Expr::InList { left, list } => {
+                left.check_text_arithmetic(is_column)?;
+                list.iter()
+                    .try_for_each(|e| e.check_text_arithmetic(is_column))
+            }
+            Expr::Not(inner) | Expr::IsNull(inner) => inner.check_text_arithmetic(is_column),
+            Expr::ColumnRef(_) | Expr::Literal(_) => Ok(()),
+        }
+    }
+
     /// Try to translate AST into Polars lazy expression.
     /// Returns Err if the operation is not supported (triggers fallback execution).
     pub fn to_polars_expr(&self) -> Result<polars::lazy::dsl::Expr, String> {
@@ -867,6 +928,17 @@ impl Parser {
 
     /// factor → NUMBER | STRING | COLUMN_NAME | FUNCTION_CALL | '(' expr ')'
     fn parse_factor(&mut self) -> Result<Expr, String> {
+        // Unary minus: `-x` is `0 - x`, which is what the user wrote down anyway, and
+        // saves the AST a variant no evaluator would treat differently.
+        if let Some(Token::Minus) = self.peek() {
+            self.advance();
+            let operand = self.parse_factor()?;
+            return Ok(Expr::BinOp {
+                op: Op::Sub,
+                left: Box::new(Expr::Literal(Value::Number(0.0))),
+                right: Box::new(operand),
+            });
+        }
         match self.advance() {
             Some(Token::Number(n)) => Ok(Expr::Literal(Value::Number(n))),
             Some(Token::StringLit(s)) => Ok(Expr::Literal(Value::String(s))),
@@ -995,6 +1067,26 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                 } else {
                     return Err("Expected '!=' for inequality, but got '!'".to_string());
                 }
+            }
+            // A column whose name has a space in it — or a dash, or anything else the
+            // bare identifier rule below would stop at — is written in backticks.
+            // Double quotes cannot serve: they are a string literal, and a table with a
+            // column called "К выплате" would have no way to say which was meant.
+            '`' => {
+                i += 1;
+                let start = i;
+                while i < chars.len() && chars[i] != '`' {
+                    i += 1;
+                }
+                if i >= chars.len() {
+                    return Err("Unterminated `column name`".to_string());
+                }
+                let name: String = chars[start..i].iter().collect();
+                if name.is_empty() {
+                    return Err("Empty column name in backticks".to_string());
+                }
+                tokens.push(Token::Ident(name));
+                i += 1; // consume closing backtick
             }
             '"' | '\'' => {
                 let quote = chars[i];
@@ -1293,5 +1385,56 @@ mod tests {
 
         let negated = Expr::parse("not age").unwrap();
         assert_eq!(negated.eval(0, &lookup, &df), Value::Null);
+    }
+
+    #[test]
+    fn a_column_name_with_a_space_is_written_in_backticks() {
+        let expr = Expr::parse("`К выплате` * 1").unwrap();
+        match &expr {
+            Expr::BinOp { left, .. } => match left.as_ref() {
+                Expr::ColumnRef(name) => assert_eq!(name, "К выплате"),
+                other => panic!("{:?}", other),
+            },
+            other => panic!("{:?}", other),
+        }
+        assert!(Expr::parse("`unterminated * 1").is_err());
+        assert!(Expr::parse("`` * 1").is_err());
+    }
+
+    #[test]
+    fn a_leading_minus_negates() {
+        // `-x` parses as `0 - x`; the shape is what the evaluator already handles.
+        match Expr::parse("-quantity").unwrap() {
+            Expr::BinOp {
+                op: Op::Sub, left, ..
+            } => match left.as_ref() {
+                Expr::Literal(Value::Number(n)) => assert_eq!(*n, 0.0),
+                other => panic!("{:?}", other),
+            },
+            other => panic!("{:?}", other),
+        }
+        assert!(Expr::parse("if(a > 1, b, -b)").is_ok());
+        assert!(Expr::parse("3 - -2").is_ok());
+    }
+
+    #[test]
+    fn text_in_arithmetic_is_refused_unless_it_is_a_number() {
+        let is_col = |s: &str| s == "К выплате";
+        // The conversion idiom stays.
+        assert!(Expr::parse("\"3\" * 1")
+            .unwrap()
+            .check_text_arithmetic(&is_col)
+            .is_ok());
+        // Comparing against text is ordinary, whatever the columns are called.
+        assert!(Expr::parse("kind == \"К выплате\"")
+            .unwrap()
+            .check_text_arithmetic(&is_col)
+            .is_ok());
+        // Reaching for a column and getting a string literal is not.
+        let err = Expr::parse("\"К выплате\" * 1")
+            .unwrap()
+            .check_text_arithmetic(&is_col)
+            .unwrap_err();
+        assert!(err.contains("backticks"), "{}", err);
     }
 }

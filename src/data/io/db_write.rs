@@ -964,21 +964,8 @@ pub fn build_plan(src: &TableSource, df: &DataFrame) -> Result<WritePlan> {
         if id.is_some() {
             continue;
         }
-        let mut sql = format!("INSERT INTO \"{}\" (", table);
-        for (i, (_, col)) in insertable.iter().enumerate() {
-            if i > 0 {
-                sql.push_str(", ");
-            }
-            sql.push_str(&format!("\"{}\"", quote_ident(&col.name)));
-        }
-        sql.push_str(") VALUES (");
-        let mut display = sql.clone();
-        let mut params: Vec<Val> = Vec::new();
-        for (i, (c, col)) in insertable.iter().enumerate() {
-            if i > 0 {
-                sql.push_str(", ");
-                display.push_str(", ");
-            }
+        let mut values: Vec<(&DbColumn, Val)> = Vec::with_capacity(insertable.len());
+        for (c, col) in insertable.iter() {
             let raw = cell(&df.df, phys, *c);
             let val = Val::parse(raw.as_deref(), col).map_err(|why| {
                 let where_ = display_of_phys
@@ -995,7 +982,43 @@ pub fn build_plan(src: &TableSource, df: &DataFrame) -> Result<WritePlan> {
                     col.name
                 ));
             }
-            push_val(&mut sql, &mut display, &mut params, val);
+            values.push((col, val));
+        }
+
+        // A column with a DEFAULT and no value is left out of the statement entirely,
+        // which is the only way the DEFAULT ever runs: naming it and passing NULL is an
+        // instruction to store NULL, and it walks straight past `DEFAULT 'direct'` and
+        // `DEFAULT (datetime('now'))` while a CHECK constraint waves it through, NULL
+        // satisfying CHECK in SQLite.  Without a DEFAULT there is nothing to fall back
+        // on and NULL is written as before.  If that would empty the statement — every
+        // column defaulted and nothing given — the full list is kept, an INSERT naming
+        // no columns being no INSERT at all.
+        let given: Vec<&(&DbColumn, Val)> = values
+            .iter()
+            .filter(|(col, val)| !(matches!(val, Val::Null) && col.default_sql.is_some()))
+            .collect();
+        let given = if given.is_empty() {
+            values.iter().collect()
+        } else {
+            given
+        };
+
+        let mut sql = format!("INSERT INTO \"{}\" (", table);
+        for (i, (col, _)) in given.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            sql.push_str(&format!("\"{}\"", quote_ident(&col.name)));
+        }
+        sql.push_str(") VALUES (");
+        let mut display = sql.clone();
+        let mut params: Vec<Val> = Vec::new();
+        for (i, (_, val)) in given.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+                display.push_str(", ");
+            }
+            push_val(&mut sql, &mut display, &mut params, val.clone());
         }
         sql.push(')');
         display.push(')');
@@ -1529,12 +1552,18 @@ fn compare_drift(
             let found = now.get(i).and_then(|v| v.as_deref());
             if !same_value(found, expected.as_deref(), col) {
                 let name = col.name.as_str();
+                // Quoted, not `{:?}` on the Option: `Some("x")` is Rust talking to
+                // itself, and this sentence is read by a person.
+                let shown = |v: Option<&str>| match v {
+                    Some(text) => format!("'{}'", text),
+                    None => "NULL".to_string(),
+                };
                 return Err(stale(format!(
-                    "Row {}, column '{}': the database has {:?}, expected {:?}",
+                    "Row {}, column '{}': the database has {}, expected {}",
                     check.id,
                     name,
-                    now.get(i).cloned().flatten(),
-                    expected
+                    shown(found),
+                    shown(expected.as_deref())
                 )));
             }
         }

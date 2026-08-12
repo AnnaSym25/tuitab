@@ -40,8 +40,11 @@ pub struct Cli {
     #[arg(long)]
     pub mcp: bool,
 
-    /// Allow the MCP server to change rows in a SQLite or DuckDB table. Off by
-    /// default: without it the write tools do not exist. Implies --mcp.
+    /// Allow the MCP server to change things that already exist: rows in a SQLite
+    /// or DuckDB table, a table replaced wholesale, or a file overwritten. Off by
+    /// default — without it the write tools do not exist and the server can only
+    /// create what is not there yet. Every such change is shown first and runs
+    /// only when applied by name. Implies --mcp.
     #[arg(long)]
     pub mcp_write: bool,
 }

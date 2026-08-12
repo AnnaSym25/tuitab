@@ -759,12 +759,43 @@ fn output_path_writes_a_file_and_refuses_to_clobber_one() {
     );
     assert!(message.contains("already exists"), "{}", message);
 
-    // Unless asked to.
-    call(
+    // Nor with overwrite alone: replacing a file the user has is what --mcp-write is
+    // for, the same as replacing a table.
+    let message = call_expecting_failure(
         &mut server,
         "tuitab_query",
         json!({"source": "test_data/sample.csv", "ops": ops,
                "output": {"path": path.to_string_lossy(), "overwrite": true}}),
+    );
+    assert!(message.contains("--mcp-write"), "{}", message);
+
+    // With the flag it is planned, and the file only changes on apply.
+    let mut on = writable_server();
+    let planned = call(
+        &mut on,
+        "tuitab_query",
+        json!({"source": "test_data/sample.csv", "ops": [{"limit": 1}],
+               "output": {"path": path.to_string_lossy(), "overwrite": true}}),
+    );
+    assert!(
+        planned["replaces"]["bytes_now"].as_u64().unwrap() > 0,
+        "{}",
+        planned
+    );
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("Engineering"),
+        "a plan writes nothing"
+    );
+
+    let id = planned["plan_id"].as_str().unwrap().to_string();
+    call(&mut on, "tuitab_write_apply", json!({"plan_id": id}));
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        after.starts_with("id,name,age,salary,department"),
+        "apply replaced it with the new result: {}",
+        after
     );
 
     std::fs::remove_file(&path).unwrap();
@@ -1312,7 +1343,7 @@ fn a_delete_removes_only_the_matched_rows() {
 }
 
 #[test]
-fn an_insert_writes_null_for_what_was_left_out_and_a_json_null_is_a_real_null() {
+fn an_insert_leaves_a_defaulted_column_to_the_schema_and_writes_null_otherwise() {
     let mut server = writable_server();
     let db = db_fixture("insert.sqlite");
     plan_then_apply(
@@ -1329,9 +1360,28 @@ fn an_insert_writes_null_for_what_was_left_out_and_a_json_null_is_a_real_null() 
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-    assert_eq!(score, None, "a column left out is NULL");
+    assert_eq!(score, None, "no DEFAULT to fall back on, so NULL");
     assert_eq!(note, None, "a JSON null is a real NULL");
-    assert_eq!(tier, None, "left out means NULL, not the column's DEFAULT");
+    assert_eq!(
+        tier.as_deref(),
+        Some("basic"),
+        "a column with a DEFAULT is left out of the statement so the DEFAULT runs"
+    );
+
+    // An explicit null on a defaulted column is a value the row does not have, so the
+    // DEFAULT beats it.  Documented, not silent: forcing NULL there means insert, then
+    // set.
+    plan_then_apply(
+        &mut server,
+        json!({"source": {"path": db.to_string_lossy(), "container": "users"},
+               "insert": [{"name": "erin", "tier": null}]}),
+    );
+    let tier: Option<String> = conn
+        .query_row("SELECT tier FROM users WHERE name = 'erin'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(tier.as_deref(), Some("basic"));
     std::fs::remove_file(&db).unwrap();
 }
 
@@ -1392,7 +1442,8 @@ fn a_plan_cannot_be_applied_twice_and_an_unknown_id_is_refused() {
         json!({"plan_id": id.clone()}),
     );
     let again = call_expecting_failure(&mut server, "tuitab_write_apply", json!({"plan_id": id}));
-    assert!(again.contains("No plan"), "{}", again);
+    // A plan this server did hand out is a different answer from one it never made.
+    assert!(again.contains("no longer valid"), "{}", again);
     assert_eq!(
         names_in(&db),
         ["ANN", "bob", "cara"],
@@ -1659,15 +1710,35 @@ fn adding_a_table_needs_no_flag_and_replacing_one_does() {
     assert!(message.contains("--mcp-write"), "{}", message);
     assert_eq!(names_in(&db), ["ann", "bob", "cara"], "nothing written");
 
-    // And with the flag, it goes through.
+    // And with the flag it is planned, not done: the one destructive thing this path
+    // can do goes through the same handshake as any other write.
     let mut on = writable_server();
-    call(
+    let planned = call(
         &mut on,
         "tuitab_query",
         json!({"source": "test_data/sample.csv", "ops": [],
                "output": {"path": db.to_string_lossy(), "table": "users", "overwrite": true}}),
     );
-    assert_ne!(names_in(&db), ["ann", "bob", "cara"], "users replaced");
+    assert_eq!(planned["replaces"]["rows_now"], json!(3), "{}", planned);
+    assert_eq!(planned["replaces"]["rows_after"], json!(20), "{}", planned);
+    assert!(
+        planned["statements"][0].as_str().unwrap().contains("DROP"),
+        "{}",
+        planned
+    );
+    assert_eq!(
+        names_in(&db),
+        ["ann", "bob", "cara"],
+        "a plan writes nothing"
+    );
+
+    let id = planned["plan_id"].as_str().unwrap().to_string();
+    call(&mut on, "tuitab_write_apply", json!({"plan_id": id}));
+    assert_ne!(
+        names_in(&db),
+        ["ann", "bob", "cara"],
+        "users replaced on apply"
+    );
     std::fs::remove_file(&db).unwrap();
     std::fs::remove_file(&fresh).unwrap();
 }
@@ -1758,7 +1829,9 @@ fn planning_again_retires_the_previous_plan_and_says_so() {
         "tuitab_write_apply",
         json!({"plan_id": first_id}),
     );
-    assert!(message.contains("No plan"), "{}", message);
+    // A newer plan is waiting, so the refusal names both.
+    assert!(message.contains(&first_id), "{}", message);
+    assert!(message.contains("waiting to be applied"), "{}", message);
     std::fs::remove_file(&db).unwrap();
 }
 
@@ -1788,7 +1861,7 @@ fn a_failed_second_plan_does_not_leave_the_first_applicable() {
         "tuitab_write_apply",
         json!({"plan_id": first_id}),
     );
-    assert!(message.contains("No plan"), "{}", message);
+    assert!(message.contains("no longer valid"), "{}", message);
     assert_eq!(names_in(&db), ["ann", "bob", "cara"], "nothing was written");
     std::fs::remove_file(&db).unwrap();
 }
@@ -1975,4 +2048,128 @@ fn two_sources_read_in_turn_do_not_evict_each_other() {
 
     std::fs::remove_file(&a).unwrap();
     std::fs::remove_file(&b).unwrap();
+}
+
+// ── What the report of 2026-08-12 found ───────────────────────────────────────────
+
+/// A copy is a whole operation: no ops at all is the table as it stands, and used to
+/// need a made-up `limit` big enough not to cut anything.
+#[test]
+fn a_query_with_no_ops_is_the_table_itself() {
+    let mut server = Server::new();
+    let out = tmp("copy-no-ops.sqlite");
+    let _ = std::fs::remove_file(&out);
+    let written = call(
+        &mut server,
+        "tuitab_query",
+        json!({"source": "test_data/sample.csv",
+               "output": {"path": out.to_string_lossy(), "table": "people"}}),
+    );
+    assert_eq!(written["row_count"], json!(20));
+    // A database is written for the next query, not for a reader, and saying otherwise
+    // makes a perfectly good table look unfit to query.
+    assert!(
+        written.get("note").is_none(),
+        "a db write must not claim formatting: {}",
+        written
+    );
+    std::fs::remove_file(&out).unwrap();
+
+    // A file a person opens still says so.
+    let csv = tmp("copy-no-ops.csv");
+    let written = call(
+        &mut server,
+        "tuitab_query",
+        json!({"source": "test_data/sample.csv",
+               "output": {"path": csv.to_string_lossy()}}),
+    );
+    assert!(written["note"].as_str().unwrap().contains("formatted"));
+    std::fs::remove_file(&csv).unwrap();
+}
+
+/// One broken question must not throw away the answers beside it — the whole point of
+/// asking several in one call is that the file is read once.
+#[test]
+fn a_failing_pipeline_does_not_take_the_others_with_it() {
+    let mut server = Server::new();
+    let out = call(
+        &mut server,
+        "tuitab_query",
+        json!({"source": "test_data/sample.csv",
+               "pipelines": [
+                   {"name": "ok", "ops": [{"frequency": {"by": "department"}}]},
+                   {"name": "bad", "ops": [{"group_by": {"by": ["department"]}}]}]}),
+    );
+    let results = out["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["name"], json!("ok"));
+    assert!(results[0]["rows"].as_array().unwrap().len() > 1);
+    assert_eq!(results[1]["name"], json!("bad"));
+    assert!(
+        results[1]["error"].as_str().unwrap().contains("aggregate"),
+        "{}",
+        results[1]
+    );
+
+    // Every question failing is still a failed call.
+    let message = call_expecting_failure(
+        &mut server,
+        "tuitab_query",
+        json!({"source": "test_data/sample.csv",
+               "pipelines": [{"name": "bad", "ops": [{"group_by": {"by": ["department"]}}]}]}),
+    );
+    assert!(message.contains("aggregate"), "{}", message);
+}
+
+/// A key nobody reads is a key the caller got wrong; ignoring it sends them looking in
+/// the wrong place when the failure surfaces a step later.
+#[test]
+fn a_misspelt_field_is_named_rather_than_ignored() {
+    let mut server = Server::new();
+    let message = call_expecting_failure(
+        &mut server,
+        "tuitab_query",
+        json!({"source": "test_data/sample.csv",
+               "ops": [{"group_by": {"by": ["department"],
+                                     "aggregate": [{"col": "salary", "fn": "sum"}]}}]}),
+    );
+    assert!(message.contains("'agg'"), "{}", message);
+
+    // And a list where an object belongs is a mistake of shape, not of field.
+    let message = call_expecting_failure(
+        &mut server,
+        "tuitab_query",
+        json!({"source": "test_data/sample.csv",
+               "ops": [{"compute": [{"name": "x", "expr": "salary * 2"}]}]}),
+    );
+    assert!(message.contains("not a list"), "{}", message);
+}
+
+/// A listing that answers `rows: null, columns: 0` costs a call per sheet to learn what
+/// the sheet even is.
+#[test]
+fn inspecting_a_spreadsheet_gives_the_size_of_every_sheet() {
+    let mut server = Server::new();
+    let xlsx = tmp("sizes.xlsx");
+    let _ = std::fs::remove_file(&xlsx);
+    let df =
+        tuitab::data::io::load_file(std::path::Path::new("test_data/sample.csv"), None).unwrap();
+    tuitab::data::io::save_file_as(
+        &df,
+        None,
+        &xlsx,
+        tuitab::data::io::doc_io::Shape::Records,
+        "Sheet1",
+    )
+    .unwrap();
+
+    let listing = call(
+        &mut server,
+        "tuitab_inspect",
+        json!({"source": xlsx.to_string_lossy()}),
+    );
+    let sheet = &listing["containers"][0];
+    assert_eq!(sheet["rows"], json!(20), "{}", listing);
+    assert_eq!(sheet["columns"], json!(5), "{}", listing);
+    std::fs::remove_file(&xlsx).unwrap();
 }

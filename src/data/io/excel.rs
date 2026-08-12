@@ -52,6 +52,27 @@ pub fn excel_sheet_names(path: &Path) -> Result<Vec<String>> {
     Ok(workbook.sheet_names().to_owned())
 }
 
+/// Every sheet with how much is in it: name, data rows, columns.
+///
+/// A listing that answers `rows: null, columns: 0` costs the caller a second call per
+/// sheet purely to learn what it is looking at.  The first row is the header, so it is
+/// not counted; a sheet with nothing in it at all answers zero and zero.
+pub fn excel_sheet_sizes(path: &Path) -> Result<Vec<(String, usize, usize)>> {
+    use calamine::{open_workbook_auto, Reader};
+    let mut workbook = open_workbook_auto(path)?;
+    let names = workbook.sheet_names().to_owned();
+    Ok(names
+        .into_iter()
+        .map(|name| {
+            let (rows, cols) = workbook
+                .worksheet_range(&name)
+                .map(|r| r.get_size())
+                .unwrap_or((0, 0));
+            (name, rows.saturating_sub(1), cols)
+        })
+        .collect())
+}
+
 pub(super) fn save_xlsx(df: &DataFrame, path: &Path) -> Result<()> {
     use rust_xlsxwriter::{Format, Workbook};
 
@@ -77,6 +98,15 @@ pub(super) fn save_xlsx(df: &DataFrame, path: &Path) -> Result<()> {
     for row_idx in 0..nrows {
         for ci in 0..ncols {
             let series = &ordered_df.columns()[ci];
+            // A missing value is a blank cell.  It used to be written as the word
+            // "null", which is a perfectly good label for a spreadsheet to hold and
+            // turned the whole column back into text when the file was read again.
+            if matches!(
+                series.get(row_idx),
+                Ok(polars::prelude::AnyValue::Null) | Err(_)
+            ) {
+                continue;
+            }
             let cell_text = series
                 .get(row_idx)
                 .map(|v| {
@@ -102,6 +132,46 @@ pub(super) fn save_xlsx(df: &DataFrame, path: &Path) -> Result<()> {
 
     workbook.save(path).map_err(|e| eyre!("{}", e))?;
     Ok(())
+}
+
+/// A sheet column as the type its values actually are.
+///
+/// Every cell arrives here as text — calamine renders a number, a date and a label
+/// alike — and a column left as text is a column no aggregate will touch: `sum` over a
+/// spreadsheet's money column used to answer "the column is string". So the whole column
+/// is offered to Int64 first and Float64 second, and keeps the text only when some cell
+/// is not a number. An empty cell is absent, not the empty string, which is the reason
+/// the cast has anything to bite on: `""` is not a number and would sink the column.
+fn typed_series(name: &str, values: Vec<String>) -> Series {
+    let cells: Vec<Option<String>> = values
+        .into_iter()
+        .map(|v| {
+            let t = v.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        })
+        .collect();
+    let text = Series::new(name.into(), &cells);
+    // A padded number is not a number: `01234` is a postcode, an account, a product
+    // code, and casting it would quietly hand back `1234`.  Nothing that reaches a
+    // spreadsheet cell as an actual number is written that way, so one such value is
+    // enough to say the column is text.
+    let padded = |s: &String| {
+        let b = s.as_bytes();
+        b.len() > 1 && b[0] == b'0' && b[1].is_ascii_digit()
+    };
+    if cells.iter().flatten().any(padded) {
+        return text;
+    }
+    for target in [DataType::Int64, DataType::Float64] {
+        if let Ok(cast) = text.strict_cast(&target) {
+            return cast;
+        }
+    }
+    text
 }
 
 fn parse_excel_range(range: calamine::Range<calamine::Data>) -> Result<DataFrame> {
@@ -148,7 +218,7 @@ fn parse_excel_range(range: calamine::Range<calamine::Data>) -> Result<DataFrame
 
     let mut series_vec = Vec::new();
     for (i, col_data) in cols_data.into_iter().enumerate() {
-        series_vec.push(Series::new(headers[i].as_str().into(), &col_data).into());
+        series_vec.push(typed_series(headers[i].as_str(), col_data).into());
     }
 
     let pdf = polars::prelude::DataFrame::new_infer_height(series_vec)?;

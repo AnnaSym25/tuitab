@@ -20,6 +20,17 @@ revenue / units
 age * 2
 ```
 
+Anything else goes in backticks — a space, a dash, a bracket:
+
+```text
+`amount due` * 1.2
+`price (net)` + `tax owed`
+```
+
+Double quotes will not do instead: `"amount due"` is a text literal, and
+arithmetic on it can only produce NULL, so it is refused rather than answered
+with a column of nothing.
+
 In the input prompt, press `Tab` to autocomplete column names.
 
 ## Literals

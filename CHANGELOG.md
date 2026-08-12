@@ -7,6 +7,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-12
+
+### Documentation
+
+- The MCP guide (`docs/en/mcp.md`, `docs/ru/mcp.md`) had said nothing about
+  writing since the tools arrived in 0.8.0. It now covers `output.table`,
+  `pipelines`, backticked column names, and the whole two-step path for changing
+  what already exists. The keybinding pages had `p` as "paste rows" from before
+  0.8.1 swapped it with `P`.
+
+### Changed
+
+- **Overwriting a file the user already has needs `--mcp-write`, and is planned.**
+  A report is no less theirs than a table, and `output.overwrite` on a `.csv` or
+  an `.xlsx` used to replace one on a boolean alone — no flag, no plan, the old
+  file gone before anybody could be told what it was. It now takes the same three
+  things as replacing a table: the flag, `output.overwrite`, and a plan applied by
+  name. The plan says what is about to go — the path, its size, when it was last
+  written — against what would replace it. Writing a path that does not exist is
+  still one call and needs no flag: there is nothing there to lose. `--mcp-write`
+  accordingly means "may change what already exists", not "may change rows", and
+  its help text says so.
+- **Replacing a table through `output.overwrite` is now planned, not done.** It
+  was the one destructive act in the whole MCP surface that happened inside a
+  single call: `tuitab_write` shows the SQL and waits for `tuitab_write_apply`,
+  while a query with `overwrite` dropped a table and wrote over it in one go —
+  and it destroys more than any `set` can, the previous table entire along with
+  the indexes and triggers hanging off it. It now answers with a plan id, the
+  `DROP`/`CREATE`/`INSERT` statements, how many rows the old table holds against
+  how many the new one will, and warnings for every index, trigger and view that
+  goes with it. Nothing is written until that plan is applied. The refusal that
+  precedes it says what is at stake — `'inventory' already exists and holds 2
+  rows. Replacing it destroys them` — rather than naming the flag that would do
+  it, which read as an instruction to re-send the call with the flag set.
+
+  This matters where there is no person watching: an agent that answers a
+  refusal by escalating cannot be talked out of it by a better error message, and
+  a second deliberate call is the only gate that does not depend on the model
+  behaving.
+
+### Fixed
+
+- **Every number in a spreadsheet was text.** Each cell reached tuitab through
+  its string rendering, so a column of money came out `string` and `sum` over it
+  answered "the column is string, and sum needs a numeric one" — an .xlsx source
+  was unusable for the arithmetic the tool exists to do. A column is now offered
+  to Int64 and then Float64, and keeps its text only when some cell is not a
+  number; an empty cell is missing rather than the empty string, which is what
+  gives the cast anything to bite on. Whole numbers stay whole: an id does not
+  come back as `1.00`.
+- **A NULL saved to .xlsx was written as the word "null"**, which read back as a
+  perfectly good label and turned the whole column into text. It is a blank cell.
+- **A column whose name has a space in it could not be referred to at all.**
+  Backticks now quote a column name — `` `К выплате` * 1 `` — and every other
+  form was worse than useless: bare broke on the space, `[...]` and backticks
+  were rejected outright, and double quotes *parsed*, silently producing a
+  column of nulls because a quoted string is a text literal. That last one is
+  now refused in words that name backticks, unless the text is a number, which
+  keeps `"3" * 1` — the documented way to coerce a string column — working.
+- **A leading minus is an expression.** `-quantity` and `if(x, a, -b)` no longer
+  answer "Unexpected token: Minus".
+- **`tuitab_inspect` gives every spreadsheet sheet's size.** It answered
+  `rows: null, columns: 0` while the instructions promised counts, so learning
+  what a sheet held cost a call per sheet.
+- **One failing pipeline no longer discards the others.** A call with several
+  `pipelines` returns each one's result or its error, so a typo in the fourth
+  question stops costing the three answers beside it. A single `ops` call still
+  fails as a whole, and a call whose every pipeline failed is still an error.
+- **`ops` is optional, as the schema always said.** With none, the result is the
+  table itself — copying one into another file needed a made-up `limit` big
+  enough not to cut anything, which silently truncates when the guess is wrong.
+- **A field the operation does not have is named, with a suggestion.** Writing
+  `aggregate` where `group_by` wants `agg` was ignored, and the failure arrived a
+  step later as "grouping needs at least one aggregate" — pointing away from the
+  typo and at the one thing that had been supplied. A list where an object
+  belongs now says so too, instead of reporting the field it could not find
+  inside it.
+- **`insert` no longer walks past the schema's DEFAULTs.** Every column was
+  named in the statement and the missing ones were given NULL, so
+  `DEFAULT 'direct'` and `DEFAULT (datetime('now'))` never ran and a CHECK
+  constraint waved the result through — NULL satisfies CHECK in SQLite. A column
+  with a DEFAULT and no value is now left out of the statement, which is the only
+  way a DEFAULT ever applies; a column without one is NULL as before. The trade
+  is named rather than hidden: an explicit `null` on insert is a value the row
+  does not have, so a DEFAULT beats it, and forcing NULL into a defaulted column
+  means inserting the row and then `set`ting that column — a real NULL on `set`
+  is still a real NULL.
+- **Writing to a database no longer claims the values were formatted for
+  reading.** That note belongs to .xlsx and .csv; on a `.sqlite` it made a
+  correctly typed table look unfit to query.
+- **A refused plan says which kind of refusal it is.** Applying a plan that a
+  later plan or a completed write had retired answered "No plan is waiting. Call
+  tuitab_write to make one", as though it had never existed.
+- **`Some("x")` no longer appears in a message for a person.** The drift error
+  quotes the values instead: `the database has 'CHANGED', expected 'PLAN_B'`.
+
 ## [0.8.2] - 2026-08-12
 
 ### Changed
@@ -864,7 +960,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Non-English keyboard remapping
 - Three binary aliases: `tuitab`, `ttab`, `tt`
 
-[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/denisotree/tuitab/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/denisotree/tuitab/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/denisotree/tuitab/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/denisotree/tuitab/compare/v0.7.0...v0.8.0

@@ -21,7 +21,9 @@ pub use directory::{load_directory, load_files_list};
 pub use duckdb::{
     duckdb_table_names, load_duckdb_overview, load_duckdb_table_by_name, load_duckdb_table_full,
 };
-pub use excel::{excel_sheet_names, load_excel_overview, load_excel_sheet_by_name};
+pub use excel::{
+    excel_sheet_names, excel_sheet_sizes, load_excel_overview, load_excel_sheet_by_name,
+};
 pub use sqlite::{
     load_sqlite_overview, load_sqlite_table_by_name, load_sqlite_table_full, sqlite_table_names,
 };
