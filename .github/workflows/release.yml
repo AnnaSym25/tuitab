@@ -105,8 +105,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          files: |
-            artifacts/*
-            artifacts/SHA256SUMS
+          # Just the one glob: SHA256SUMS is written into that directory a step
+          # earlier, so naming it again uploaded it twice and the second upload
+          # 404'd on the asset the first had already replaced — leaving the release
+          # a draft with no checksums in it.
+          files: artifacts/*
           body: ${{ steps.cliff.outputs.content }}
           fail_on_unmatched_files: true
