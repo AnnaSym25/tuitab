@@ -1,6 +1,6 @@
 [package]
 name = "tuitab"
-version = "0.9.1"
+version = "0.9.2"
 edition = "2021"
 authors = ["denisotree"]
 description = "Terminal tabular data explorer — CSV/JSON/YAML/TOML/Parquet/Excel/SQLite viewer with filtering, sorting, pivot tables, and charts"
@@ -48,9 +48,10 @@ chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
 bincode = "1"
 arboard = { version = "3", default-features = false }
-polars = { version = "0.53", default-features = false, features = ["csv", "lazy", "dtype-date", "dtype-datetime", "strings", "parquet", "ipc", "serde", "pivot", "is_in", "regex", "rank", "cum_agg"] }
+polars = { version = "0.53", default-features = false, features = ["csv", "lazy", "dtype-date", "dtype-datetime", "strings", "parquet", "ipc", "serde", "pivot", "is_in", "regex", "rank", "cum_agg", "diagonal_concat"] }
 libc = "0.2"
 calamine = { version = "0.36", features = ["chrono"] }
+glob = "0.3"
 rusqlite = { version = "0.40", features = ["bundled"] }
 duckdb = { version = "1" }
 rust_xlsxwriter = "0.97"

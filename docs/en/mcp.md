@@ -190,6 +190,40 @@ rank orders by the value it reads.
 Use `window` with `over` for a share within a group, and `compute` with
 `amount / sum(amount)` for a share of the whole table.
 
+## Many files at once
+
+A path may be a pattern, and every file it matches is read as one table, in sorted
+order:
+
+```json
+{"source": {"path": "/data/monthly/*.csv"}}
+{"source": {"path": "/site/content/**/index.md"}}
+```
+
+The files have to hold the same columns; the one that does not is named rather than
+stacked into a table with holes in it. A pattern that matches nothing answers `glob
+matched no files: …` — the pattern is fine, there is nothing there, and that is a
+different problem from a path that does not exist.
+
+`?` and `[abc]` work too. A relative pattern is resolved from wherever the server was
+started, same as a plain path.
+
+### A markdown page as a row
+
+A page is a record: the frontmatter fields are its columns, `body` is the page text,
+and `file` is the path it came from. YAML frontmatter between `---` fences and TOML
+between `+++` are both read; a `---` inside the body is a rule, not a fence.
+
+```json
+{"source": {"path": "/site/content/en/teas/*/index.md"},
+ "ops": [{"filter": [{"col": "draft", "op": "ne", "value": true}]},
+         {"aggregate": [{"col": "*", "fn": "count"}]}]}
+```
+
+Pages need not carry the same fields — a field a page lacks arrives as NULL, the way a
+list of JSON objects already behaves. That is what makes a static site checkable
+against a database in one call instead of through an export script.
+
 ## Reading the answers
 
 Rows come back as arrays matching the `columns` list:
@@ -296,6 +330,10 @@ data is. Give absolute paths.
 **Multi-table files need a `container`.** For `.xlsx`, `.sqlite` and `.duckdb`,
 `tuitab_inspect` without one lists the sheets or tables; pass the one you want to
 see its columns.
+
+**A directory lists its files.** It does not read them — that is what a pattern is
+for. The listing is how you find your way around; `dir/*.csv` is how you compute
+over what is in there.
 
 **Nested data has a limit.** `tuitab_query` flattens JSON, YAML and TOML into a
 table. When the structure is deeper than that survives, `tuitab_jq` takes a jq

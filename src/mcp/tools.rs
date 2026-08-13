@@ -40,12 +40,26 @@ WORKFLOW
 
 FORMATS
 csv, tsv, txt, parquet, arrow/feather/ipc, xlsx/xls, sqlite, duckdb, json, jsonl, \
-yaml, toml, and a directory path (which lists its files). For xlsx, sqlite and duckdb, pass \
-'container' to pick a sheet or table; tuitab_inspect lists them with their row and \
-column counts, and for a database also the CREATE statement and each column's \
-declared SQL type, NOT NULL, PRIMARY KEY and DEFAULT. Views are listed and readable; \
-they cannot be written to. A database source always needs a 'container' — without one \
-there is nothing to read.
+yaml, toml, md/markdown, and a directory path (which lists its files). For xlsx, sqlite \
+and duckdb, pass 'container' to pick a sheet or table; tuitab_inspect lists them with \
+their row and column counts, and for a database also the CREATE statement and each \
+column's declared SQL type, NOT NULL, PRIMARY KEY and DEFAULT. Views are listed and \
+readable; they cannot be written to. A database source always needs a 'container' — \
+without one there is nothing to read.
+
+MANY FILES AT ONCE
+A path may be a glob pattern — 'data/*.csv', 'content/**/index.md' — and every file it \
+matches is read as one table, in sorted order. The files have to hold the same columns, \
+and the one that does not is named. A pattern matching nothing says so rather than \
+claiming the path does not exist. Use a pattern to reach a directory that holds more \
+than data files: the directory itself lists its files, which is what you want for \
+finding your way and not for computing.
+
+A markdown page is one row: its frontmatter fields are columns (YAML between --- \
+fences, or TOML between +++), the page text is 'body', and 'file' is the path it came \
+from. Pages need not carry the same fields — a field a page lacks is NULL. So \
+'content/**/index.md' turns a static site into a table you can group, join against a \
+database, and count.
 
 OPERATIONS for tuitab_query
   {\"filter\": [{\"col\":\"region\",\"op\":\"eq\",\"value\":\"North\"}]}

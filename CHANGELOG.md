@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-08-13
+
+### Added
+
+- **A source may be a glob pattern.** `data/*.csv`, `content/**/index.md`: every
+  file it matches is read as one table, in sorted order, whatever the format.
+  Until now any pattern answered "No such file" — `Path::exists` is false for a
+  pattern however many files it would match — while the error for a directory of
+  mixed extensions advised using one, an instruction nothing could follow. A
+  pattern matching nothing now says exactly that (`glob matched no files: …`),
+  which is a different problem from a path that is not there; files that do not
+  agree on their columns are refused with the one that broke the agreement named.
+- **Markdown with frontmatter is a table.** A page is one row: its frontmatter
+  fields are columns (YAML between `---`, TOML between `+++`), the page text is
+  `body`, and `file` is where it came from. Pages need not carry the same fields —
+  one a page lacks arrives as NULL. With a pattern that makes a static site
+  checkable against a database in a single call: `content/**/index.md` grouped,
+  joined and counted, where before it needed an export script.
+
+### Fixed
+
+- **A directory in the MCP server lists its files, as the instructions always
+  said.** It was handed instead to the CSV reader — the default for a path with no
+  extension — which quietly concatenated a directory of like files and refused one
+  holding a `cover.jpg` beside an `index.md`, in Polars' words and with Polars'
+  advice. The terminal has always listed; now both do.
+
 ## [0.9.1] - 2026-08-12
 
 ### Fixed
@@ -972,7 +999,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Non-English keyboard remapping
 - Three binary aliases: `tuitab`, `ttab`, `tt`
 
-[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/denisotree/tuitab/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/denisotree/tuitab/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/denisotree/tuitab/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/denisotree/tuitab/compare/v0.8.1...v0.8.2

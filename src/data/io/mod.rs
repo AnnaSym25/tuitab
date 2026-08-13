@@ -12,6 +12,7 @@ mod directory;
 pub mod doc_io;
 mod duckdb;
 mod excel;
+mod markdown;
 
 mod parquet;
 mod sqlite;
@@ -109,6 +110,8 @@ pub fn load_file_as(
             | "sqlite3"
             | "duckdb"
             | "ddb"
+            | "md"
+            | "markdown"
     );
     if !has_ext || !known_tabular {
         if let Ok(text) = std::fs::read_to_string(path) {
@@ -131,6 +134,8 @@ pub(crate) fn load_tabular(path: &Path, delimiter: Option<u8>, ext: &str) -> Res
         "txt" => txt::load_txt(path),
         "parquet" => parquet::load_parquet(path),
         "arrow" | "feather" | "ipc" => arrow::load_arrow(path),
+        // A page is a record: its frontmatter fields, plus the body.
+        "md" | "markdown" => markdown::load_markdown(path),
         "xlsx" | "xls" => excel::load_excel(path),
         // Not the extension: `.db` names no engine at all, and a name is only ever a
         // claim.  `kind_for_path` reads the file's own header and falls back to the

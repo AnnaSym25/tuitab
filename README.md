@@ -34,8 +34,8 @@ cat data.csv | tuitab -t csv      # read from a pipe
 ## Highlights
 
 - **Tabular and structured formats** — CSV/TSV (auto-delimiter), JSON, JSONL/NDJSON,
-  YAML, TOML, Parquet, Arrow/Feather, Excel (xlsx/xls), SQLite, DuckDB. Browse a whole
-  directory, or pipe data in over stdin.
+  YAML, TOML, Parquet, Arrow/Feather, Excel (xlsx/xls), SQLite, DuckDB, and Markdown
+  with frontmatter. Browse a whole directory, or pipe data in over stdin.
 - **Nested data, edited in place** — JSON/YAML/TOML open as a table over the real
   document: `Enter` dives into a nested object or list, `(` expands a nested column
   into one column per key, `m` switches between record and key/value layouts, and edits
@@ -245,6 +245,10 @@ tuitab instead of doing the arithmetic in its head:
 ```sh
 claude mcp add tuitab -- tuitab --mcp
 ```
+
+A source may be a glob — `content/**/index.md` reads every page of a static site as
+one table, each page a row of its frontmatter — so a site can be checked against a
+database in one call rather than through an export script.
 
 Four tools: `tuitab_inspect` (columns, types, row count, sample rows),
 `tuitab_query` (fifteen operations composed as a pipeline — filter, group by,
