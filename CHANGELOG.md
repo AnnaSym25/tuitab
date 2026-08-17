@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-08-18
+
+### Added
+
+- **`O` opens a form for the new row.** One field per column, generated from the
+  sheet itself and labelled with the column's type. `↑` `↓` or `Tab` /
+  `Shift+Tab` walk the fields, `←` `→` move inside one, `Enter` inserts the row
+  at the end of the table, `Esc` cancels. Each value is checked against its
+  column as it is typed: a value the column cannot hold is marked red with the
+  reason under the fields, and `Enter` refuses until it is fixed. This is the
+  first insert path that asks the question at all — editing a cell with `e`
+  answers a value the column cannot hold by turning the whole column into text
+  and saying "Cell updated", so an Int64 column loaded from a Parquet file could
+  become strings without a word, and only a database save would ever complain.
+  A field left blank is NULL rather than an empty string, and because a blank
+  field is more often a row someone is still filling in than a deliberate NULL,
+  the first `Enter` says how many are blank and waits for a second one. On a
+  database sheet `\N` means NULL here too, the same as when editing a cell.
+
+### Changed
+
+- **`O` no longer inserts a blank row above the cursor** — that was the same
+  thing `o` does, in the other direction, and the form is what the key is for
+  now. `o` is unchanged: a blank row below the cursor.
+
 ## [0.9.2] - 2026-08-13
 
 ### Added
@@ -999,7 +1024,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Non-English keyboard remapping
 - Three binary aliases: `tuitab`, `ttab`, `tt`
 
-[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/denisotree/tuitab/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/denisotree/tuitab/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/denisotree/tuitab/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/denisotree/tuitab/compare/v0.8.2...v0.9.0
