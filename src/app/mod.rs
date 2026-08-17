@@ -67,6 +67,7 @@ pub struct App {
     pub pivot: PivotState,
     pub chart: ChartState,
     pub join: JoinState,
+    pub row_form: crate::app_state::RowFormState,
     pub copy: CopyState,
     pub dedup_tiebreaker: DedupTiebreakerState,
 }
@@ -102,6 +103,7 @@ impl App {
             pivot: PivotState::default(),
             chart: ChartState::default(),
             join: JoinState::default(),
+            row_form: crate::app_state::RowFormState::default(),
             copy: CopyState::default(),
             dedup_tiebreaker: DedupTiebreakerState::default(),
         }
@@ -629,6 +631,10 @@ impl App {
             None => return,
         };
         let action = match self.handle_pivot_action(action) {
+            Some(a) => a,
+            None => return,
+        };
+        let action = match self.handle_row_form_action(action) {
             Some(a) => a,
             None => return,
         };

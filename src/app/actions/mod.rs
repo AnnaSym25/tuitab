@@ -9,6 +9,7 @@ pub(super) mod io;
 pub(super) mod join;
 pub(super) mod navigation;
 pub(super) mod pivot;
+pub(super) mod row_form;
 pub(super) mod search;
 pub(super) mod selection;
 pub(super) mod type_select;

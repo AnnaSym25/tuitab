@@ -18,6 +18,7 @@
 //! | [`aggregator`] | [`aggregator::AggregatorKind`] enum and compatibility rules |
 //! | [`sort`] | Sort-by-column implementation using Polars `arg_sort` |
 //! | [`transpose`] | Standing rows on end — one row, or the whole table, with the inverse built in |
+//! | [`typed_value`] | Checking one typed-in value against a column's type, before it is stored |
 //! | [`swap`] | Serialize/deserialize a `DataFrame` to disk to free memory when sheets are stacked |
 //! | [`query`] | jq programs over a document — the result is just another document |
 //! | [`window`] | Window functions — rank, running total, lag/lead, partition shares |
@@ -40,6 +41,7 @@ pub mod query;
 pub mod sort;
 pub mod swap;
 pub mod transpose;
+pub mod typed_value;
 pub mod view;
 pub mod window;
 

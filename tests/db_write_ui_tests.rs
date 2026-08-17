@@ -642,13 +642,13 @@ fn a_format_tuitab_cannot_write_is_still_an_error() {
 }
 
 #[test]
-fn o_and_o_add_rows_where_vim_would() {
+fn o_adds_a_row_below_the_cursor_where_vim_would() {
     let path = fixture("addrow.sqlite");
     let mut app = open_table(&path);
     assert_eq!(app.stack.active().dataframe.visible_row_count(), 3);
 
-    app.stack.active_mut().table_state.select(Some(1));
-    press(&mut app, "O"); // above row 1
+    app.stack.active_mut().table_state.select(Some(0));
+    press(&mut app, "o"); // below row 0
     assert_eq!(app.stack.active().table_state.selected(), Some(1));
     let names_now: Vec<String> = (0..4)
         .map(|r| {
@@ -666,6 +666,53 @@ fn o_and_o_add_rows_where_vim_would() {
     press(&mut app, "U");
     press(&mut app, "U");
     assert_eq!(app.stack.active().dataframe.visible_row_count(), 3);
+}
+
+/// A row typed into the form has to carry the same "no database identity yet" mark
+/// `o` gives one, or the save would look for a row to UPDATE and find none.
+#[test]
+fn a_row_typed_into_the_form_is_inserted_on_save() {
+    let path = fixture("addrow-form.sqlite");
+    let mut app = open_table(&path);
+
+    press(&mut app, "O");
+    assert_eq!(app.mode, AppMode::RowForm);
+    key(&mut app, KeyCode::Down); // id is a PRIMARY KEY — leave it to the database
+    press(&mut app, "dave");
+    key(&mut app, KeyCode::Enter); // warns about the blank id and note
+    key(&mut app, KeyCode::Enter); // and this accepts them as NULL
+    assert_eq!(app.mode, AppMode::Normal, "{}", app.status_message);
+
+    save_key(&mut app);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, AppMode::SqlConfirm, "{:?}", app.save.error);
+    assert!(screen(&mut app).contains("INSERT INTO"), "no INSERT shown");
+    key(&mut app, KeyCode::Enter);
+
+    assert_eq!(names(&path), ["ann", "bob", "cara", "dave"]);
+}
+
+/// `\N` is what `e` shows and takes back for a NULL, so the form has to read it the
+/// same way rather than storing the two characters.
+#[test]
+fn the_null_sentinel_works_in_the_form_too() {
+    let path = fixture("addrow-null.sqlite");
+    let mut app = open_table(&path);
+    let before = app.stack.active().dataframe.visible_row_count();
+
+    press(&mut app, "O");
+    key(&mut app, KeyCode::Down); // id
+    press(&mut app, "\\N"); // name
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Enter); // id and note are blank, so this accepts them
+    assert_eq!(app.mode, AppMode::Normal, "{}", app.status_message);
+
+    let s = app.stack.active();
+    let name = s.dataframe.column_index("name").unwrap();
+    assert!(
+        s.dataframe.is_null_physical(before, name),
+        "\\N must mean NULL, not a two-character string"
+    );
 }
 
 #[test]

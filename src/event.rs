@@ -120,7 +120,7 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
             KeyCode::Char('p') => Action::PasteCell,
             KeyCode::Char('P') => Action::PasteRows,
             KeyCode::Char('o') => Action::AddRowBelow,
-            KeyCode::Char('O') => Action::AddRowAbove,
+            KeyCode::Char('O') => Action::OpenRowForm,
             KeyCode::Char('d') => Action::DeleteSelectedRows,
             // Derived sheet
             KeyCode::Char('"') => Action::CreateSheetFromSelection,
@@ -360,6 +360,25 @@ pub fn handle_key_event(key: KeyEvent, mode: AppMode, can_pop: bool) -> Action {
             KeyCode::Home => Action::TableNameCursorStart,
             KeyCode::End => Action::TableNameCursorEnd,
             KeyCode::Char(c) => Action::TableNameChar(c),
+            _ => Action::None,
+        },
+
+        // Up/Down walk the fields, Left/Right walk the characters of the focused one.
+        // Tab is a second Down here rather than the autocomplete it is in every other
+        // text mode — the form has nothing to complete, and a form is where a hand
+        // reaches for Tab.
+        AppMode::RowForm => match key.code {
+            KeyCode::Esc => Action::CancelRowForm,
+            KeyCode::Enter => Action::ApplyRowForm,
+            KeyCode::Up | KeyCode::BackTab => Action::RowFormFieldUp,
+            KeyCode::Down | KeyCode::Tab => Action::RowFormFieldDown,
+            KeyCode::Backspace => Action::RowFormBackspace,
+            KeyCode::Delete => Action::RowFormForwardDelete,
+            KeyCode::Left => Action::RowFormCursorLeft,
+            KeyCode::Right => Action::RowFormCursorRight,
+            KeyCode::Home => Action::RowFormCursorStart,
+            KeyCode::End => Action::RowFormCursorEnd,
+            KeyCode::Char(c) => Action::RowFormInput(c),
             _ => Action::None,
         },
 

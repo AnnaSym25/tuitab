@@ -101,6 +101,17 @@ See [Expressions](expressions.md) for the `|!=` filter language.
 | `m` | Cycle how the current node is projected: records / key-value / scalars |
 | `(` / `)` | Expand a nested column into one column per key, or fold it back |
 | `ge` | Bulk-edit — set the same value on every selected row |
+| `o` | Add an empty row below the cursor |
+| `O` | New-row form — one field per column, each checked against the column's type |
+
+The form (`O`) generates itself from the sheet's columns: `↑` `↓` or `Tab` /
+`Shift+Tab` walk the fields, `←` `→` move within one, `Enter` inserts the row at the
+end of the table, `Esc` cancels. A value the column cannot hold is marked as you type
+and `Enter` refuses until it is fixed — so an integer column never quietly turns into
+text. A field left empty is NULL, not an empty string; if any field is still blank the
+first `Enter` says how many and waits, and a second `Enter` inserts. On a database
+sheet `\N` also means NULL, the same as when editing a cell. Not available on a
+JSON/YAML/TOML sheet.
 
 ## Clipboard (`y` prefix)
 

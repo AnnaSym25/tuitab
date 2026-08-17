@@ -73,6 +73,7 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         AppMode::SPrefix => " S-MODE ",
         AppMode::SelectRandomInput => " RAND-N ",
         AppMode::DedupTiebreakerSelect => " DEDUP  ",
+        AppMode::RowForm => " NEW ROW",
     };
 
     frame.render_widget(

@@ -91,3 +91,29 @@ fn the_order_picker_reaches_the_screen() {
     );
     assert!(text.contains("cum_sum"), "and name the function it is for");
 }
+
+#[test]
+fn the_new_row_form_reaches_the_screen() {
+    let mut app = open(SAMPLE, "salary");
+    press(&mut app, "O");
+
+    let text = screen(&mut app);
+    assert!(text.contains("New row"), "the form did not draw");
+    for name in ["id", "name", "age", "salary", "department"] {
+        assert!(
+            text.contains(name),
+            "the form must offer a field for {}",
+            name
+        );
+    }
+
+    // A value the column cannot hold is complained about on the screen, not only
+    // in the state — this is the whole point of the form.
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Down);
+    press(&mut app, "old");
+    assert!(
+        screen(&mut app).contains("not a whole number"),
+        "the reason did not reach the screen"
+    );
+}

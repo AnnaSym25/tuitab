@@ -77,11 +77,7 @@ impl App {
                 None
             }
             Action::AddRowBelow => {
-                self.add_empty_row(true);
-                None
-            }
-            Action::AddRowAbove => {
-                self.add_empty_row(false);
+                self.add_empty_row();
                 None
             }
             Action::TogglePinColumn => {
@@ -235,12 +231,12 @@ impl App {
         self.mode = AppMode::Normal;
     }
 
-    /// Put an empty row under (`o`) or over (`O`) the cursor and land on it, as vim does.
+    /// Put an empty row under the cursor (`o`) and land on it, as vim does.
     ///
     /// This is the other half of building a table from nothing: `zi` gives it columns,
     /// this gives it rows.  The new row carries no database identity, so saving turns it
-    /// into an INSERT.
-    pub(super) fn add_empty_row(&mut self, below: bool) {
+    /// into an INSERT.  `O` fills a row in first — see [`App::handle_row_form_action`].
+    pub(super) fn add_empty_row(&mut self) {
         if self.reject_on_doc_sheet("Adding a row") {
             return;
         }
@@ -251,7 +247,7 @@ impl App {
 
         let s = self.stack.active_mut();
         s.push_undo();
-        let at = s.table_state.selected().unwrap_or(0) + usize::from(below);
+        let at = s.table_state.selected().unwrap_or(0) + 1;
         match s.dataframe.insert_empty_row(at) {
             Ok(()) => {
                 let at = at.min(s.dataframe.visible_row_count().saturating_sub(1));

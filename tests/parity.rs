@@ -361,7 +361,19 @@ fn parity(action: &Action) -> Parity {
         // A blank row to type into is a terminal idea, but the row itself reaches the
         // server as tuitab_write's 'insert'.
         Action::AddRowBelow => Parity::Shared("tuitab_write's 'insert'"),
-        Action::AddRowAbove => Parity::Shared("tuitab_write's 'insert'"),
+        // The form is a way of typing a row; the row it produces is the same insert.
+        Action::ApplyRowForm => Parity::Shared("tuitab_write's 'insert'"),
+        Action::OpenRowForm
+        | Action::RowFormInput(_)
+        | Action::RowFormBackspace
+        | Action::RowFormForwardDelete
+        | Action::RowFormCursorLeft
+        | Action::RowFormCursorRight
+        | Action::RowFormCursorStart
+        | Action::RowFormCursorEnd
+        | Action::RowFormFieldUp
+        | Action::RowFormFieldDown
+        | Action::CancelRowForm => Parity::UiOnly("keystrokes inside the row form"),
         Action::DeleteSelectedRows => Parity::Composable("the inverse filter"),
         Action::EnterYPrefix => Parity::UiOnly("a chord prefix"),
         Action::CopyCurrentCell => Parity::UiOnly("clipboard"),

@@ -50,8 +50,9 @@ cat data.csv | tuitab -t csv      # read from a pipe
 - **Clean, fast, type-aware** — Polars-backed engine, Everforest theme, undo/redo,
   currency / percentage / date column types.
 - **Build a database from nothing** — `tuitab inventory.sqlite` on a file that does not
-  exist opens a blank sheet. Add columns (`zi`), give them types (`t`), add rows (`o` /
-  `O`), type the values, `Ctrl+S`. tuitab asks what to call the table and writes a real
+  exist opens a blank sheet. Add columns (`zi`), give them types (`t`), add rows (`o`,
+  or `O` for a form that checks each value against its column type), `Ctrl+S`. tuitab
+  asks what to call the table and writes a real
   typed one: an Integer column is declared `INTEGER` and stores integers, NULL stays
   NULL. SQLite and DuckDB both.
 - **Edit a database table and save it back** — open a SQLite or DuckDB table, edit
@@ -298,6 +299,7 @@ for every command (column ops, clipboard, dedup, and more).
 | `m` | Cycle JSON/YAML/TOML layout | `zEnter` | Dive into the node in this cell |
 | `(` / `)` | Expand / fold a nested column | | |
 | `E` | Edit cell (or node) in `$EDITOR` | `Ctrl+S` | Save / export / convert |
+| `o` | Add an empty row below | `O` | New-row form, checked by column type |
 | `U` / `Ctrl+R` | Undo / redo | | |
 | `?` | Help | `q` | Quit / pop sheet |
 

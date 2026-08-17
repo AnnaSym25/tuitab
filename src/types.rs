@@ -96,6 +96,8 @@ pub enum AppMode {
     SqlConfirm,
     /// Naming the table a new database will be given
     TableNameInput,
+    /// Filling in a new row field by field, checked against the column types (`O`)
+    RowForm,
 }
 
 /// Distinguishes a regular data sheet from derived views.
@@ -453,9 +455,22 @@ pub enum Action {
     // ── Clipboard & row operations ────────────────────────────────────────────
     PasteRows, // 'P' — paste rows from clipboard
     PasteCell, // 'p' — paste clipboard text into the cell under the cursor
-    /// Add an empty row below / above the cursor (`o` / `O`)
+    /// Add an empty row below the cursor (`o`)
     AddRowBelow,
-    AddRowAbove,
+    /// Open the new-row form (`O`) — one field per column, checked against its type
+    OpenRowForm,
+    RowFormInput(char),
+    RowFormBackspace,
+    RowFormForwardDelete,
+    RowFormCursorLeft,
+    RowFormCursorRight,
+    RowFormCursorStart,
+    RowFormCursorEnd,
+    RowFormFieldUp,
+    RowFormFieldDown,
+    /// Enter in the form — insert the row, unless a field is still wrong
+    ApplyRowForm,
+    CancelRowForm,
     DeleteSelectedRows,          // 'd' — delete selected rows
     EnterYPrefix,                // 'y' — enter y-prefix mode for copy
     CancelYPrefix,               // Esc in YPrefix mode

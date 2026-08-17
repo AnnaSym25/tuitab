@@ -544,6 +544,146 @@ impl DataFrame {
         Ok(())
     }
 
+    /// Append rows built from values already parsed against each column's type.
+    ///
+    /// [`Self::insert_empty_row`] leaves the typing to [`Self::set_cell`], which answers a
+    /// value the column cannot hold by turning the whole column into text. The row form
+    /// (`O`) asks [`crate::data::typed_value::parse_typed_value`] first, so what arrives
+    /// here already has the column's shape — a mismatch below is a bug, not a typo.
+    ///
+    /// A `None` is a NULL, the same choice [`Self::insert_empty_row`] makes for a cell
+    /// nobody filled in.
+    pub fn insert_rows_typed(
+        &mut self,
+        rows: &[Vec<Option<crate::data::typed_value::TypedCell>>],
+    ) -> Result<(), String> {
+        use crate::data::typed_value::TypedCell;
+
+        if self.columns.is_empty() {
+            return Err("the sheet has no columns".into());
+        }
+        if rows.is_empty() {
+            return Ok(());
+        }
+        if let Some(bad) = rows.iter().find(|r| r.len() != self.columns.len()) {
+            return Err(format!(
+                "a row of {} values does not fit {} columns",
+                bad.len(),
+                self.columns.len()
+            ));
+        }
+
+        let n = rows.len();
+        let mut block: Vec<Column> = Vec::with_capacity(self.columns.len());
+        for i in 0..self.columns.len() {
+            let src = &self.df.columns()[i];
+            let name = src.name().clone();
+            let target = src.dtype().clone();
+            let cells: Vec<Option<&TypedCell>> = rows.iter().map(|r| r[i].as_ref()).collect();
+
+            // Which builder to use is decided by the value, not by `ColumnMeta.col_type`:
+            // the two disagree on a column an earlier edit degraded to text, and the cast
+            // at the end is what settles that case.
+            let series = match cells.iter().flatten().next() {
+                None => Series::full_null(name, n, &target),
+                Some(TypedCell::Str(_)) => {
+                    let v: Vec<Option<String>> = cells
+                        .iter()
+                        .map(|c| match c {
+                            Some(TypedCell::Str(s)) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    Series::new(name, v)
+                }
+                Some(TypedCell::I64(_)) => {
+                    let v: Vec<Option<i64>> = cells
+                        .iter()
+                        .map(|c| match c {
+                            Some(TypedCell::I64(x)) => Some(*x),
+                            _ => None,
+                        })
+                        .collect();
+                    Series::new(name, v)
+                }
+                Some(TypedCell::F64(_)) => {
+                    let v: Vec<Option<f64>> = cells
+                        .iter()
+                        .map(|c| match c {
+                            Some(TypedCell::F64(x)) => Some(*x),
+                            _ => None,
+                        })
+                        .collect();
+                    Series::new(name, v)
+                }
+                Some(TypedCell::Bool(_)) => {
+                    let v: Vec<Option<bool>> = cells
+                        .iter()
+                        .map(|c| match c {
+                            Some(TypedCell::Bool(x)) => Some(*x),
+                            _ => None,
+                        })
+                        .collect();
+                    Series::new(name, v)
+                }
+                // Days and microseconds go in as numbers and are cast, exactly as
+                // `col_date_from_str` and `col_datetime_from_str` do — text is not a
+                // route into these two dtypes here.
+                Some(TypedCell::DateDays(_)) => {
+                    let v: Vec<Option<i32>> = cells
+                        .iter()
+                        .map(|c| match c {
+                            Some(TypedCell::DateDays(x)) => Some(*x),
+                            _ => None,
+                        })
+                        .collect();
+                    Series::new(name, v)
+                        .strict_cast(&polars::prelude::DataType::Date)
+                        .map_err(|e| format!("Cannot cast to Date. Error: {}", e))?
+                }
+                Some(TypedCell::DatetimeMicros(_)) => {
+                    let v: Vec<Option<i64>> = cells
+                        .iter()
+                        .map(|c| match c {
+                            Some(TypedCell::DatetimeMicros(x)) => Some(*x),
+                            _ => None,
+                        })
+                        .collect();
+                    Series::new(name, v)
+                        .strict_cast(&polars::prelude::DataType::Datetime(
+                            TimeUnit::Microseconds,
+                            None,
+                        ))
+                        .map_err(|e| format!("Cannot cast to Datetime. Error: {}", e))?
+                }
+            };
+
+            let series = if series.dtype() == &target {
+                series
+            } else {
+                series.strict_cast(&target).map_err(|_| {
+                    format!(
+                        "Column '{}' holds {}, and the value given is not",
+                        self.columns[i].name, target
+                    )
+                })?
+            };
+            block.push(series.into());
+        }
+
+        let first = self.df.height();
+        let block = polars::prelude::DataFrame::new(n, block).map_err(|e| e.to_string())?;
+        self.df.vstack_mut(&block).map_err(|e| e.to_string())?;
+        for k in 0..n {
+            Arc::make_mut(&mut self.row_order).push(first + k);
+            Arc::make_mut(&mut self.original_order).push(first + k);
+        }
+        self.record_added_rows(n);
+        self.modified = true;
+        self.aggregates_cache = None;
+        Ok(())
+    }
+
     /// Note that `count` rows were appended to the frame and have no database row yet,
     /// so a later writeback INSERTs them.
     pub fn record_added_rows(&mut self, count: usize) {

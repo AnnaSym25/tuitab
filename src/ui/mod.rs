@@ -50,6 +50,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         | AppMode::ZPrefix
         | AppMode::RenamingColumn
         | AppMode::InsertingColumn
+        | AppMode::RowForm
         | AppMode::ColReplacingFind
         | AppMode::ColReplacingReplace
         | AppMode::ColSplitting
@@ -112,6 +113,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
                     "Save & Export (Enter to confirm, Esc to cancel)",
                     &app.save.input,
                     app.save.error.as_deref(),
+                    frame.area(),
+                );
+            }
+            if app.mode == AppMode::RowForm {
+                popup::render_row_form_popup(
+                    frame,
+                    &app.row_form,
+                    &app.stack.active().dataframe.columns,
                     frame.area(),
                 );
             }

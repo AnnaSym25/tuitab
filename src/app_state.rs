@@ -141,6 +141,24 @@ pub struct JoinState {
     pub pending_queue: Vec<JoinContextItem>,
 }
 
+/// The new-row form (`O`): one text field per column, checked as it is typed.
+///
+/// The fields are kept parallel to the sheet's columns rather than keyed by name —
+/// the form is rebuilt from scratch every time it opens, so a rename or an added
+/// column in between cannot leave a stale key behind.
+#[derive(Default)]
+pub struct RowFormState {
+    pub fields: Vec<TextInput>,
+    /// Why the field at the same index is not acceptable yet, if it is not.
+    pub errors: Vec<Option<String>>,
+    pub focus: usize,
+    /// Enter found empty fields and said so; a second Enter accepts them as NULL.
+    ///
+    /// Cleared by any other key, so the confirmation cannot survive a change to what
+    /// it was about.
+    pub confirm_empty: bool,
+}
+
 #[derive(Default)]
 pub struct CopyState {
     pub pending: Option<CopyPending>,
