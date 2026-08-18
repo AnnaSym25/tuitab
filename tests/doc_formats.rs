@@ -642,11 +642,14 @@ fn a_large_json_loaded_in_the_background_keeps_its_document() {
     std::fs::write(&path, &text).unwrap();
     assert!(std::fs::metadata(&path).unwrap().len() > 10 * 1024 * 1024);
 
-    let rx = load_in_background(path.clone(), None);
+    let rx = load_in_background(path.clone(), None, None);
     let LoadEvent::Complete(result) = rx.recv().unwrap();
-    let (df, doc) = result.unwrap();
+    let opened = result.unwrap();
+    let df = opened.df;
     assert_eq!(df.visible_row_count(), n);
-    let doc = doc.expect("the background loader must carry the document tree");
+    let doc = opened
+        .doc
+        .expect("the background loader must carry the document tree");
 
     let out_path = out("big-out.json");
     save_file_as(&df, Some(&doc), &out_path, Shape::Records, "big").unwrap();

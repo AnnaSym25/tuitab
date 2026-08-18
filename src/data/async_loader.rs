@@ -1,5 +1,4 @@
-use crate::data::dataframe::DataFrame;
-use crate::data::io::{doc_io::DocState, load_file_with_doc};
+use crate::data::io::{open_target, Opened};
 use color_eyre::Result;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -7,19 +6,23 @@ use std::thread;
 
 /// Event sent from the background loading thread to the main thread.
 pub enum LoadEvent {
-    /// The loaded table, plus the document tree when the file was a structured format.
-    /// The tree has to travel with it: a sheet without one silently loses nesting the
-    /// moment it is saved.
-    Complete(Result<(DataFrame, Option<DocState>)>),
+    /// Everything [`open_target`] produced.  It travels whole: a frame on its own loses
+    /// the document tree (nesting would vanish on the next save) and the container path
+    /// (the drill-in would have nothing to open — #43).
+    Complete(Result<Opened>),
 }
 
 /// Spawn a background thread to load a file.
 /// Returns a `Receiver` that delivers a `LoadEvent::Complete` when done.
-pub fn load_in_background(path: PathBuf, delimiter: Option<u8>) -> mpsc::Receiver<LoadEvent> {
+pub fn load_in_background(
+    path: PathBuf,
+    delimiter: Option<u8>,
+    forced: Option<crate::data::doc::Format>,
+) -> mpsc::Receiver<LoadEvent> {
     let (tx, rx) = mpsc::channel();
 
     thread::spawn(move || {
-        let result = load_file_with_doc(&path, delimiter);
+        let result = open_target(&path, delimiter, forced);
         let _ = tx.send(LoadEvent::Complete(result));
     });
 

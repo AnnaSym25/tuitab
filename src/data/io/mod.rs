@@ -75,6 +75,98 @@ pub fn load_file_with_doc(
     load_file_as(path, delimiter, None)
 }
 
+/// Everything opening a path produces: the table, the document tree when there is one,
+/// and — when the table is a listing of what is inside a container — the path that
+/// listing came from.  A sheet without the container path renders the same but cannot be
+/// drilled into: `Enter` has nothing to tell it that a row names a table (#43).
+pub struct Opened {
+    pub df: DataFrame,
+    pub doc: Option<doc_io::DocState>,
+    pub sqlite_db_path: Option<std::path::PathBuf>,
+    pub duckdb_db_path: Option<std::path::PathBuf>,
+    pub xlsx_db_path: Option<std::path::PathBuf>,
+}
+
+impl Default for Opened {
+    fn default() -> Self {
+        Self {
+            df: DataFrame::empty(),
+            doc: None,
+            sqlite_db_path: None,
+            duckdb_db_path: None,
+            xlsx_db_path: None,
+        }
+    }
+}
+
+/// Open `path` the way the application opens it, rather than the way its bytes read.
+///
+/// The difference is the containers: a database and a workbook of several sheets open as
+/// a listing of what is inside, and that listing is only useful with the path it came
+/// from.  Every caller that puts a file on the sheet stack goes through here, so the
+/// answer cannot depend on which of them asked — the background loader included, which
+/// is where the two used to disagree.
+///
+/// `forced` wins over all of it: `--type yaml notes.db` means parse it as YAML, not open
+/// a database.
+pub fn open_target(
+    path: &Path,
+    delimiter: Option<u8>,
+    forced: Option<crate::data::doc::Format>,
+) -> Result<Opened> {
+    if forced.is_some() {
+        let (df, doc) = load_file_as(path, delimiter, forced)?;
+        return Ok(Opened {
+            df,
+            doc,
+            ..Default::default()
+        });
+    }
+
+    if db_write::is_db_ext(path) {
+        // Not the extension: `.db` names no engine.  `kind_for_path` reads the header,
+        // the same answer the writer uses.
+        return Ok(match db_write::kind_for_path(path) {
+            db_write::DbKind::Sqlite => Opened {
+                df: load_sqlite_overview(path)?,
+                sqlite_db_path: Some(path.to_path_buf()),
+                ..Default::default()
+            },
+            db_write::DbKind::DuckDb => Opened {
+                df: load_duckdb_overview(path)?,
+                duckdb_db_path: Some(path.to_path_buf()),
+                ..Default::default()
+            },
+        });
+    }
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    // One sheet is just a table; the overview would be a list of length one standing
+    // between the user and their data.
+    if matches!(ext.as_str(), "xlsx" | "xls" | "xlsm" | "xlsb") {
+        if let Ok(names) = excel_sheet_names(path) {
+            if names.len() > 1 {
+                return Ok(Opened {
+                    df: load_excel_overview(path)?,
+                    xlsx_db_path: Some(path.to_path_buf()),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    let (df, doc) = load_file_as(path, delimiter, None)?;
+    Ok(Opened {
+        df,
+        doc,
+        ..Default::default()
+    })
+}
+
 pub fn load_file_as(
     path: &Path,
     delimiter: Option<u8>,

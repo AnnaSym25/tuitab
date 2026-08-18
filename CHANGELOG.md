@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-08-18
+
+### Fixed
+
+- **A database over 10 MB opened as a listing you could not open anything from.**
+  Past that size the file is read on a background thread, and that loader
+  rebuilt the table but dropped everything else it knew — including the fact
+  that it had opened a database. `Enter` reads exactly that to tell "this row
+  names a table" from "this row is data", so with it gone the drill-in fell
+  through to transposing the row, and transposing the transpose went on
+  forever. Small databases were unaffected, which is why this survived four
+  releases ([#43](https://github.com/denisotree/tuitab/issues/43)).
+
+  The loader dropped two more things with it. A workbook of several sheets over
+  10 MB opened its first sheet instead of the sheet list, leaving the others
+  unreachable; and `--type` was ignored above the threshold, so
+  `--type jsonl big.txt` read plain text. All three came from the same place:
+  three separate answers to "what is this file", of which the background one was
+  the poorest. There is now a single `open_target` every open goes through — the
+  command line, the background loader, and opening a file from a directory
+  listing — so size decides only where the work happens, never what the file is
+  taken to be.
+
 ### Security
 
 - **Bump `h2` 0.4.13 → 0.4.16** for RUSTSEC-2026-0258, unbounded empty DATA
@@ -1071,7 +1094,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Non-English keyboard remapping
 - Three binary aliases: `tuitab`, `ttab`, `tt`
 
-[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.9.4...HEAD
+[0.9.4]: https://github.com/denisotree/tuitab/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/denisotree/tuitab/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/denisotree/tuitab/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/denisotree/tuitab/compare/v0.9.0...v0.9.1
