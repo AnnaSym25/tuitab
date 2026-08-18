@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Bump `h2` 0.4.13 → 0.4.16** for RUSTSEC-2026-0258, unbounded empty DATA
+  frames. It arrives through polars' `object_store` → `reqwest` → `hyper`, the
+  S3 and Azure HTTP stack that tuitab never enters — it opens local files — so
+  the code is as unreachable as the two quick-xml advisories the audit already
+  ignores. Unlike those, this one has a fixed version to move to, so it is
+  moved to rather than ignored.
+
 ### Documentation
 
 - **The guides caught up with the last four releases.** `docs/en` and `docs/ru`
