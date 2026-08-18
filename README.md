@@ -66,9 +66,10 @@ cat data.csv | tuitab -t csv      # read from a pipe
   whole database is copied first, leaving the original alone. NULL is shown as `NULL`
   and typed as `\N`, so it never silently becomes an empty string.
 - **Export and convert** — write back to CSV, TSV, Parquet, Arrow, JSON, JSONL, YAML,
-  TOML, Excel, or SQLite. Converting between structured formats is just a different
-  extension: open `config.toml`, save as `config.yaml`. Yank rows to the clipboard as
-  TSV, CSV, JSON, or Markdown.
+  TOML, Excel, SQLite, or DuckDB. Converting between structured formats is just a
+  different extension: open `config.toml`, save as `config.yaml`. Markdown is read
+  only — a page comes in as a row, and nothing writes one back out. Yank rows to the
+  clipboard as TSV, CSV, JSON, or Markdown.
 - **MCP server** — `tuitab --mcp` exposes the same engine to an AI assistant, so it
   computes over your data instead of guessing at it. It reads databases properly:
   tables *and* views, with each column's declared SQL type, keys and defaults.
@@ -111,6 +112,29 @@ Press `=` and type an expression. Arithmetic, string and date functions, and
 conditionals are all supported — the new column appears right next to the cursor.
 
 ![Computed columns](https://raw.githubusercontent.com/denisotree/tuitab/master/.github/assets/compute.gif)
+
+### Editing a database table
+
+Open a SQLite or DuckDB table, edit it, and `Ctrl+S` back onto the same file.
+Every `UPDATE`, `INSERT`, `DELETE` and `ALTER TABLE` is shown before anything
+runs, and the whole list goes in one transaction.
+
+![Editing a database table](https://raw.githubusercontent.com/denisotree/tuitab/master/.github/assets/database.gif)
+
+### The new-row form
+
+`O` builds a form out of the sheet: one field per column, labelled with its type
+and checked as you type. A value the column cannot hold is refused with the
+reason instead of quietly turning the column into text.
+
+![The new-row form](https://raw.githubusercontent.com/denisotree/tuitab/master/.github/assets/rowform.gif)
+
+### JSON, YAML and TOML as a document
+
+`Enter` dives into a nested object or list, edits write back into the document
+rather than a flattened copy, and converting is just a different extension.
+
+![Structured formats as a tree](https://raw.githubusercontent.com/denisotree/tuitab/master/.github/assets/tree.gif)
 
 ---
 
@@ -209,7 +233,9 @@ Arguments:
 
 Options:
   -d, --delimiter <CHAR>   Column delimiter (auto-detected if omitted)
-  -t, --type <FORMAT>      Format when reading from stdin: csv, tsv, txt, json
+  -t, --type <FORMAT>      Data format (csv, tsv, txt, json, jsonl, yaml, toml).
+                           Required for stdin; for a file it overrides the
+                           extension, so `-t yaml deploy.conf` works
       --mcp                Run as an MCP server on stdio (see below)
       --mcp-write          Let that server change what already exists — rows,
                            a whole table, a file. Off by default; every such
@@ -321,6 +347,7 @@ Full guides, organised by topic, in two languages:
 | [Charts](https://github.com/denisotree/tuitab/blob/master/docs/en/charts.md) | [Графики](https://github.com/denisotree/tuitab/blob/master/docs/ru/charts.md) |
 | [JOIN](https://github.com/denisotree/tuitab/blob/master/docs/en/join.md) | [JOIN](https://github.com/denisotree/tuitab/blob/master/docs/ru/join.md) |
 | [Pivot tables](https://github.com/denisotree/tuitab/blob/master/docs/en/pivot.md) | [Сводные таблицы](https://github.com/denisotree/tuitab/blob/master/docs/ru/pivot.md) |
+| [Databases](https://github.com/denisotree/tuitab/blob/master/docs/en/database.md) | [Базы данных](https://github.com/denisotree/tuitab/blob/master/docs/ru/database.md) |
 | [MCP server](https://github.com/denisotree/tuitab/blob/master/docs/en/mcp.md) | [MCP-сервер](https://github.com/denisotree/tuitab/blob/master/docs/ru/mcp.md) |
 | [Recipes](https://github.com/denisotree/tuitab/blob/master/docs/en/recipes.md) | [Рецепты](https://github.com/denisotree/tuitab/blob/master/docs/ru/recipes.md) |
 

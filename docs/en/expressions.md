@@ -38,6 +38,7 @@ In the input prompt, press `Tab` to autocomplete column names.
 | Kind | Examples |
 |------|----------|
 | Number | `42`, `3.14`, `-5` |
+| Negation | A leading minus is an expression: `-quantity`, `if(x, a, -b)` |
 | String | `"Engineering"`, `"N/A"` |
 | Date | `2024-01-31` (`YYYY-MM-DD`) |
 
@@ -85,6 +86,7 @@ not (status == "closed")
 | `split(s, delim)` | First field of `s` split on `delim` |
 | `substring(s, start, len)` | Substring (0-based start) |
 | `len(s)` | Length of the string |
+| `contains(s, regex)` | True when `s` matches the regular expression |
 
 ### Dates & time
 
@@ -108,6 +110,27 @@ if(salary > 100000, "senior", "standard")
 concat(first_name, " ", last_name)
 year(hire_date)
 ```
+
+### Aggregates over the whole column
+
+| Function | Result |
+|----------|--------|
+| `sum(col)` | Total of the column |
+| `count(col)` | Number of values |
+| `mean(col)` | Average |
+| `min(col)` / `max(col)` | Smallest / largest |
+
+These read the whole column, not the row, which is what makes a share of the
+total one expression:
+
+```text
+amount / sum(amount)     # this row's share of the table
+```
+
+> In a row select an aggregate makes one verdict about the table rather than a
+> test per row: `|!=mean(age) > 30` is true for every row or for none. To
+> compare a row against the average, put the aggregate on one side of an
+> ordinary comparison — `age > mean(age)`.
 
 ## Date arithmetic
 

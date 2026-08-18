@@ -3,8 +3,9 @@
 > 🇬🇧 [This page in English](../en/join.md) · [← Оглавление документации](README.md)
 
 Нажмите `J`, чтобы соединить текущую таблицу с другой через пошаговый мастер.
-Вторая таблица может быть **любым файлом, который открывает tuitab** (CSV,
-Parquet, JSON, Excel, SQLite, DuckDB) либо другим уже открытым листом.
+Вторая таблица может быть **любым файлом, который открывает tuitab** (CSV, TSV,
+JSON, JSONL, YAML, TOML, Parquet, Arrow, Excel, Markdown, SQLite, DuckDB) либо
+другим уже открытым листом.
 
 ![Мастер JOIN](https://raw.githubusercontent.com/denisotree/tuitab/master/.github/assets/join.gif)
 

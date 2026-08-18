@@ -28,10 +28,8 @@ Type "!"
 Sleep 1000ms
 
 # Move cursor onto category (the column to spread across).
-# Pinning floats region to the front, so two steps right
-# (past date) land on category.
-Type "l"
-Sleep 300ms
+# Pinning shows region in the frozen block on the left but does
+# not reorder the frame, so one step right lands on category.
 Type "l"
 Sleep 800ms
 

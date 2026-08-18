@@ -28,14 +28,47 @@ tuitab app.db
 | Format | Extensions | Notes |
 |--------|-----------|-------|
 | CSV / TSV | `.csv`, `.tsv` | Delimiter auto-detected; override with `-d` |
-| JSON | `.json` | Array of objects, or newline-delimited |
+| JSON | `.json` | Opens as a tree over the real document |
+| JSONL / NDJSON | `.jsonl`, `.ndjson` | One record per line |
+| YAML | `.yaml`, `.yml` | Tree, like JSON |
+| TOML | `.toml` | Tree, like JSON |
 | Parquet | `.parquet` | Columnar, fast |
+| Arrow / Feather | `.arrow`, `.feather`, `.ipc` | Read and written |
 | Excel | `.xlsx`, `.xls` | Multi-sheet workbooks open as a sheet list |
+| Markdown | `.md`, `.markdown` | A page is one row: frontmatter fields are columns, the text is `body`, the path is `file` |
 | SQLite | `.sqlite`, `.sqlite3`, `.db` | Tables open as a table list |
-| DuckDB | `.duckdb`, `.ddb`, `.db` | `.db` is probed as SQLite first, then DuckDB |
+| DuckDB | `.duckdb`, `.ddb`, `.db` | Which engine a `.db` is comes from the file's own header, not its name |
 
 For workbooks and databases, tuitab first shows an overview (sheets or tables);
-press `Enter` on a row to open it, `Esc` / `q` to go back.
+press `Enter` on a row to open it, `Esc` / `q` to go back. Tables can be edited
+and saved back — see [Databases](database.md).
+
+JSON, YAML and TOML are not flattened into a copy: the sheet is a view over the
+document itself, `Enter` dives into a nested object or list, and saving
+re-serialises the tree. Converting between them is just a different extension on
+`Ctrl+S`.
+
+![A TOML file edited in place and saved as YAML](https://raw.githubusercontent.com/denisotree/tuitab/master/.github/assets/tree.gif)
+
+### Force a format
+
+`-t` is required for stdin, and for a file it overrides the extension:
+
+```sh
+tuitab -t yaml deploy.conf     # a YAML file that is not called .yaml
+```
+
+An unknown extension is decided by the contents, so `deploy.conf` usually opens
+correctly with no flag at all.
+
+### Open a database that does not exist yet
+
+```sh
+tuitab inventory.sqlite        # nothing there — a blank sheet opens
+```
+
+Add columns, give them types, add rows, `Ctrl+S`, and tuitab writes a real typed
+table. See [Databases](database.md).
 
 ### Override the delimiter
 
@@ -79,9 +112,10 @@ psql -c "SELECT * FROM orders" --csv | tuitab -t csv
 echo '[{"id":1,"name":"Alice"}]'   | tuitab -t json
 ```
 
-Stdin understands `csv`, `tsv`, `txt`, and `json`. (`txt` is treated as CSV.)
-To read Parquet, Excel, SQLite, or DuckDB, open the file by path instead of
-piping it.
+Stdin understands `csv`, `tsv`, `txt`, `json`, `jsonl`/`ndjson`, `yaml`/`yml`
+and `toml`. (`txt` is treated as CSV.) To read Parquet, Arrow, Excel, Markdown,
+SQLite, or DuckDB, open the file by path instead of piping it. `-` works as an
+explicit stdin path: `cat data.csv | tuitab -t csv -`.
 
 ## The screen
 
@@ -106,4 +140,7 @@ piping it.
 
 - Learn the [keybindings](keybindings.md).
 - Try [charts](charts.md), [pivot tables](pivot.md), and [JOINs](join.md).
+- Edit a table and write it back with [Databases](database.md).
+- Let an assistant compute over your files with the [MCP server](mcp.md)
+  (`tuitab --mcp`).
 - Browse task-oriented [recipes](recipes.md).

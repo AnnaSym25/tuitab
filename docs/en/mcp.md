@@ -62,13 +62,20 @@ Code, `/mcp` shows the same thing.
 
 | Tool | What it answers |
 |------|-----------------|
-| `tuitab_inspect` | What is in this file — sheets or tables, column names, inferred types, row count, a few sample rows |
+| `tuitab_inspect` | What is in this file — sheets, tables and views, column names, inferred types, row count, a few sample rows. For a database also each column's declared SQL type, NOT NULL, PRIMARY KEY and DEFAULT, the `CREATE` statement, and every table's row and column counts |
 | `tuitab_query` | Everything computational, as a pipeline of operations |
 | `tuitab_describe` | A statistical profile of every column |
 | `tuitab_jq` | A jq program over nested JSON, JSONL, YAML or TOML |
 
 `tuitab_inspect` comes first in any session. Column names guessed from a file
-name are wrong often enough to cost a round trip.
+name are wrong often enough to cost a round trip. It takes `sample_rows` (default
+5) if the default is too few or too many.
+
+Every tool takes the same `source`: `path`, plus `container` for a sheet or
+table, `delimiter` to override CSV auto-detection, and `format` to override the
+extension (`{"path": "deploy.conf", "format": "yaml"}`). A bare path string works
+too. `tuitab_describe` takes `columns` to profile only some of them;
+`tuitab_query` takes `output.limit` (default 100 rows).
 
 Started with `--mcp-write`, the server has two more — `tuitab_write` and
 `tuitab_write_apply` — and everything under [Changing what already
@@ -327,9 +334,11 @@ A query cannot write into the file it read.
 relative to wherever the client launched the process, which is rarely where the
 data is. Give absolute paths.
 
-**Multi-table files need a `container`.** For `.xlsx`, `.sqlite` and `.duckdb`,
-`tuitab_inspect` without one lists the sheets or tables; pass the one you want to
-see its columns.
+**A database always needs a `container`.** `tuitab_inspect` without one lists the
+tables and views; every other call is refused — `'shop.db' holds 4 tables and
+views; pass 'container' to pick one` — because a database with no table named is
+a listing, not data. An `.xlsx` is gentler: without a `container` it lists its
+sheets.
 
 **A directory lists its files.** It does not read them — that is what a pattern is
 for. The listing is how you find your way around; `dir/*.csv` is how you compute

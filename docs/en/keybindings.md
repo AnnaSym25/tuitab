@@ -92,7 +92,7 @@ See [Expressions](expressions.md) for the `|!=` filter language.
 | `I` | Describe sheet — per-column statistics |
 | `F` | Frequency table for the cursor column |
 | `gF` | Multi-column frequency table (groups by the pinned columns) |
-| `gD` | Deduplicate by the pinned columns (keeps the first row per group) |
+| `gD` / `gd` / `gU` | Deduplicate by the pinned columns (keeps the first row per group) |
 | `V` | [Chart](charts.md) the cursor column |
 | `W` | [Pivot table](pivot.md) |
 | `J` | [JOIN](join.md) with another table |
@@ -133,16 +133,17 @@ marked with `zs`.
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+S` | Save / export / convert (CSV, TSV, Parquet, JSON, JSONL, YAML, TOML, Excel, or SQLite) |
-
-Saving a plain table (CSV, Parquet, SQL, a pivot) to JSON/YAML/TOML asks which shape to
-produce — `[{col: val}, …]`, `{col: [val, …]}`, or `{a: b}` for a two-column table — and
-remembers the answer for the rest of the session. A sheet that already carries a
-document is never asked: its tree is re-serialised as it is.
+| `Ctrl+S` | Save / export / convert (CSV, TSV, Parquet, Arrow/Feather, JSON, JSONL, YAML, TOML, Excel, SQLite, or DuckDB) |
 | `R` | Reload the file from disk |
 | `U` / `Shift+U` | Undo (up to 50 steps) |
 | `Ctrl+R` | Redo |
 | `?` | Toggle the help overlay |
+
+Saving a plain table (CSV, Parquet, SQL, a pivot) to JSON/YAML/TOML asks which shape to
+produce — `[{col: val}, …]`, `{col: [val, …]}`, or `{a: b}` for a two-column table — and
+remembers the answer for the rest of the session. A sheet that already carries a
+document is never asked: its tree is re-serialised as it is. Saving onto a database
+shows every statement first — see [Databases](database.md).
 
 ## Charts view
 
@@ -166,7 +167,6 @@ save path, …):
 | `↑` / `↓` | Previous / next entry in history (expression & pivot inputs) |
 | `Enter` | Apply |
 | `Esc` | Cancel |
-
 
 ## JSON / YAML / TOML sheets
 

@@ -3,8 +3,9 @@
 > 🇷🇺 [Эта страница на русском](../ru/join.md) · [← Documentation index](README.md)
 
 Press `J` to combine the current table with another one through a step-by-step
-wizard. The other table can be **any file tuitab opens** (CSV, Parquet, JSON,
-Excel, SQLite, DuckDB) or another sheet you already have open.
+wizard. The other table can be **any file tuitab opens** (CSV, TSV, JSON, JSONL,
+YAML, TOML, Parquet, Arrow, Excel, Markdown, SQLite, DuckDB) or another sheet you
+already have open.
 
 ![JOIN wizard](https://raw.githubusercontent.com/denisotree/tuitab/master/.github/assets/join.gif)
 

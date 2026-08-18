@@ -32,6 +32,21 @@ list.
 - **% within groups** — press `zF`, choose the partition columns, and get a
   share-of-partition column.
 
+## Rank, running totals and group aggregates
+
+- **Window column** — press `zw` on a column: `row_number`, `rank`,
+  `dense_rank`, `cum_sum`, `lag`, `lead`, a group's `sum`/`avg`/`min`/`max`/
+  `count` repeated on its rows, or `pct_of_total`. A rank asks which end comes
+  first; a running total asks which column orders the rows — the table itself is
+  not re-sorted — and both then ask for the partition columns. The new column
+  lands next to the one it describes.
+- **Group by** — pin the grouping columns with `!`, mark the aggregates you want
+  with `+`, then press `gb`.
+- **Sort by several keys** — sort with `[` / `]` as usual, then move to the next
+  column and press `z[` / `z]` to add it as a further key. Chaining two plain
+  sorts does not do this: the second is free to reorder rows that tie on its own
+  key.
+
 ## Reshape
 
 - **Transpose a row** — press `Enter` to flip the current row into a
@@ -50,6 +65,13 @@ list.
 - **Find & replace** — `zr` (literal) or `zg` (regex) within the column.
 - **Split a column** — `zx`, then enter the delimiter.
 - **Decimal places** — `z.` more, `z,` fewer.
+- **Add a row** — `o` for a blank one below the cursor, or `O` for a form with
+  one field per column. The form is generated from the sheet, labels each field
+  with the column's type, and checks the value as you type: one the column cannot
+  hold is marked red and `Enter` refuses until it is fixed. A blank field is
+  NULL, and the first `Enter` says how many are blank and waits for a second.
+
+![The new-row form](https://raw.githubusercontent.com/denisotree/tuitab/master/.github/assets/rowform.gif)
 
 ## Set column types
 
@@ -67,8 +89,8 @@ Percentage, Currency, or File size. Choosing **Currency** then lets you pick
 | `yZ` | The whole cursor column |
 | `yR` | The whole table — choose TSV / CSV / JSON / Markdown |
 
-Mark columns with `zs` to include only those in `yr` / `yR`. Paste rows back with
-`p`.
+Mark columns with `zs` to include only those in `yr` / `yR`. `P` pastes rows from
+the clipboard; `p` pastes into the cell under the cursor.
 
 ## Export to a file
 
@@ -78,9 +100,21 @@ Press `Ctrl+S` and enter a path. The format follows the extension:
 |-----------|--------|
 | `.csv` / `.tsv` | CSV / TSV |
 | `.parquet` | Parquet |
+| `.arrow` / `.feather` / `.ipc` | Arrow / Feather |
 | `.json` | JSON |
-| `.xlsx` | Excel |
+| `.jsonl` | JSONL / NDJSON |
+| `.yaml` / `.yml` | YAML |
+| `.toml` | TOML |
+| `.xlsx` / `.xls` | Excel |
 | `.db` / `.sqlite` / `.sqlite3` | SQLite |
+| `.duckdb` / `.ddb` | DuckDB |
+
+Converting between structured formats is just a different extension: open
+`config.toml`, save as `config.yaml`. Saving a plain table (CSV, Parquet, a
+pivot) to JSON/YAML/TOML asks which shape to produce and remembers the answer for
+the rest of the session; a sheet that already carries a document is never asked.
+Saving to a database asks for a table name and writes real column types — see
+[Databases](database.md).
 
 `Tab` autocompletes the path. Undo any edit with `U`, redo with `Ctrl+R`, or
 reload from disk with `R`.
@@ -92,3 +126,8 @@ reload from disk with `R`.
 - **Select by expression** — `|` then `!=expr`, e.g. `|!=amount > 1000`
   (see [Expressions](expressions.md)).
 - Then `"` to make a sheet from the selection, or `d` to delete it.
+
+## See also
+
+- [Databases](database.md) — editing a table and writing it back.
+- [Expressions](expressions.md) — the language behind `=`, `|` and the pivot formula.

@@ -1,0 +1,19 @@
+name = "warehouse-api"
+port = 8080
+debug = false
+released = 2026-05-27T07:32:00Z
+
+[database]
+host = "db.internal"
+port = 5432
+pool = 10
+
+[[servers]]
+host = "alpha"
+region = "North"
+weight = 3
+
+[[servers]]
+host = "beta"
+region = "South"
+weight = 1

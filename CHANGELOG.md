@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **The guides caught up with the last four releases.** `docs/en` and `docs/ru`
+  were written once, at 0.5.0, and only `keybindings`, `expressions` and `mcp`
+  were touched since — so the recipes still said `p` pastes rows (0.8.1 swapped
+  it with `P`), getting started still said a `.db` is probed as SQLite and then
+  DuckDB (0.8.0 made the file's own header decide), and the stdin format list
+  named four of the seven it accepts. The format tables gained JSONL, YAML,
+  TOML, Arrow and Markdown-with-frontmatter, the export table gained everything
+  writable, and the recipes gained `zw`, `gb` and `z[`/`z]` from 0.7.0 and the
+  `O` form from 0.9.3. The MCP page documents the schema fields it never
+  mentioned — `format`, `delimiter`, `sample_rows`, `output.limit`, `columns` —
+  and says that a database is refused without a `container` rather than
+  gently preferring one.
+- **A page about databases**, which the documentation had never had while the
+  README carried two paragraphs on it: opening a table, editing it, what the
+  confirmation popup shows, when a table has to be rebuilt and when that is
+  refused, what saving elsewhere copies, and building a database from nothing.
+  Everything on it was checked against the running binary rather than against
+  this changelog — which is how one claim died: a pivot or JOIN saved onto a
+  database does not refuse, it adds a table.
+- **The keybinding pages' File table rendered as literal pipes.** A paragraph
+  sat between the first row and the rest, which ends a markdown table, so `R`,
+  `U`, `Ctrl+R` and `?` were text. Its `Ctrl+S` list was also missing Arrow and
+  DuckDB, both writable.
+- **`--type` in the README's usage block** still described itself as a stdin-only
+  flag, nine lines below an example using it to override a file's extension.
+
+### Fixed
+
+- **`pivot.gif` had been demonstrating the wrong column since 0.8.0.** Pinning
+  stopped reordering the frame that release — the pinned column is drawn in the
+  frozen block without being moved — and the tape still stepped two columns
+  right after pinning, landing on `units` instead of `category`. Nothing refuses
+  that, so the recorded pivot spread across twenty-eight unit counts. Three
+  new recordings alongside it: the `O` row form, editing a database table with
+  the SQL shown first, and JSON/YAML/TOML as a document.
+
 ## [0.9.3] - 2026-08-18
 
 ### Added

@@ -29,8 +29,8 @@ Escape
 Sleep 800ms
 
 # Pin region, then chart revenue grouped by region.
-# Pinning floats region to the front, so step right past
-# date/category/units to land back on revenue.
+# Pinning does not reorder the frame, so stepping right from
+# region past category/units lands back on revenue.
 Type "hhh"
 Sleep 500ms
 Type "!"
