@@ -5,7 +5,8 @@
 //! can be read.
 
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use tuitab::app::App;
 use tuitab::mcp::{handle_message, Server};
 
 fn dir() -> PathBuf {
@@ -182,4 +183,132 @@ fn a_page_is_a_row_of_its_frontmatter() {
     );
     assert!(!err, "{}", total);
     assert_eq!(total["rows"][0][0], json!(21.5));
+}
+
+// ── The terminal ───────────────────────────────────────────────────────────────
+//
+// The pattern reading above was the MCP server's alone: `App::new_as` asked
+// `Path::exists`, got false for `data/*.csv`, and opened a blank writable sheet
+// titled `*.csv` — offering, on Ctrl+S, to create a file with a star in its name.
+// These hold the two surfaces to one answer.
+
+#[test]
+fn the_terminal_stacks_what_a_pattern_matches() {
+    let base = dir().join("cli");
+    let _ = std::fs::remove_dir_all(&base);
+    write("cli/one.csv", "a,b\n1,x\n2,y\n");
+    write("cli/two.csv", "a,b\n3,z\n");
+
+    let pattern = format!("{}/*.csv", base.display());
+    let app = App::new_as(Path::new(&pattern), None, None).expect("a pattern opens");
+
+    let sheet = app.stack.active();
+    assert_eq!(sheet.dataframe.visible_row_count(), 3);
+    assert!(sheet.title.contains("*.csv"), "{}", sheet.title);
+    assert!(
+        app.status_message.contains("2 files"),
+        "the file count is the only evidence the pattern caught what was meant: {}",
+        app.status_message
+    );
+
+    // A pattern is not a file: no path to reload from, and nothing that would let a
+    // save write back to one of the several files on screen.
+    assert!(sheet.source_path.is_none(), "{:?}", sheet.source_path);
+
+    // What the user actually sees, not just the field behind it: with no `source_path`
+    // the prefill falls back through the hint to the sheet title, and the title is the
+    // pattern.  Without the hint this offers to create a file with a `*` in its name.
+    let mut app = app;
+    app.handle_action(tuitab::types::Action::SaveFile);
+    let offered = app.save.input.as_str();
+    assert!(
+        !offered.contains('*'),
+        "Ctrl+S offers a filename with a star in it: {}",
+        offered
+    );
+    assert!(!offered.is_empty(), "Ctrl+S offers nothing to save as");
+}
+
+#[test]
+fn a_pattern_the_terminal_cannot_match_is_an_error_not_a_blank_sheet() {
+    // The reported bug, stated as a test: this used to succeed, handing back an empty
+    // one-column sheet and "does not exist yet — Ctrl+S creates it".  The directory has
+    // to be there, or `blank_at` would refuse for the wrong reason and the test would
+    // pass against the very bug it is here to catch.
+    let _ = std::fs::remove_dir_all(dir().join("cli-empty"));
+    write("cli-empty/keep.txt", "");
+    let pattern = format!("{}/nothing-*.csv", dir().join("cli-empty").display());
+    let Err(err) = App::new_as(Path::new(&pattern), None, None) else {
+        panic!("a pattern that matches nothing is not a new file to create");
+    };
+    assert!(err.to_string().contains("glob matched no files"), "{}", err);
+}
+
+#[test]
+fn the_terminal_names_the_file_with_other_columns() {
+    let base = dir().join("cli-mismatch");
+    let _ = std::fs::remove_dir_all(&base);
+    write("cli-mismatch/good.csv", "a,b\n1,x\n");
+    write("cli-mismatch/odd.csv", "c\n7\n");
+
+    let pattern = format!("{}/*.csv", base.display());
+    let Err(err) = App::new_as(Path::new(&pattern), None, None) else {
+        panic!("columns disagree, so the pattern must not stack them");
+    };
+    let message = err.to_string();
+    assert!(message.contains("odd.csv"), "{}", message);
+    assert!(message.contains("different columns"), "{}", message);
+}
+
+#[test]
+fn the_terminal_unions_markdown_pages() {
+    let base = dir().join("cli-site");
+    let _ = std::fs::remove_dir_all(&base);
+    write("cli-site/one/index.md", "---\ntitle: One\n---\n\nBody.\n");
+    // `draft` is the field only the second page carries: a refusal here would mean the
+    // terminal stacked instead of unioning.
+    write(
+        "cli-site/two/index.md",
+        "---\ntitle: Two\ndraft: true\n---\n\nBody.\n",
+    );
+
+    let pattern = format!("{}/*/index.md", base.display());
+    let app = App::new_as(Path::new(&pattern), None, None).expect("pages union");
+    let sheet = app.stack.active();
+    assert_eq!(sheet.dataframe.visible_row_count(), 2);
+    let names: Vec<&str> = sheet
+        .dataframe
+        .columns
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert!(names.contains(&"draft"), "{:?}", names);
+}
+
+#[test]
+fn an_explicit_type_applies_to_every_file_a_pattern_matches() {
+    let base = dir().join("cli-typed");
+    let _ = std::fs::remove_dir_all(&base);
+    write(
+        "cli-typed/a.conf",
+        "{\"a\":1,\"b\":\"x\"}\n{\"a\":2,\"b\":\"y\"}\n",
+    );
+    write("cli-typed/b.conf", "{\"a\":3,\"b\":\"z\"}\n");
+
+    let pattern = format!("{}/*.conf", base.display());
+    let app = App::new_as(
+        Path::new(&pattern),
+        None,
+        Some(tuitab::data::doc::Format::Jsonl),
+    )
+    .expect("--type reaches every matched file");
+    let sheet = app.stack.active();
+    assert_eq!(sheet.dataframe.visible_row_count(), 3);
+    let names: Vec<&str> = sheet
+        .dataframe
+        .columns
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["a", "b"]);
 }

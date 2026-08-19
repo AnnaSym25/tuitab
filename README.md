@@ -227,8 +227,8 @@ tuitab data.csv
 tuitab [OPTIONS] [FILES]...
 
 Arguments:
-  [FILES]...  One or more files to open, a directory, or '-' for stdin.
-              Pass multiple files to browse them as a list.
+  [FILES]...  One or more files to open, a directory, a quoted glob pattern,
+              or '-' for stdin. Pass multiple files to browse them as a list.
               Defaults to the current directory.
 
 Options:
@@ -252,6 +252,21 @@ tuitab orders.csv customers.csv products.parquet
 
 A directory-style listing opens with each file as a row. Press `Enter` to open
 one; `Esc` or `q` to go back.
+
+### Many files as one table
+
+```sh
+tuitab 'data/*.csv'
+tuitab 'content/**/index.md'
+```
+
+Quoted, the pattern reaches tuitab and every file it matches is stacked into one
+table — the listing above is for picking a file, this is for reading them together.
+Unquoted, the shell expands it first and you get the listing instead. Tabular files
+have to hold the same columns, and the one that does not is named rather than
+folded in; markdown pages are records, so they are unioned and a field a page lacks
+arrives NULL. A pattern is not a file, so the sheet has nothing to reload from and
+`Ctrl+S` asks where to put it.
 
 ### Pipe mode
 

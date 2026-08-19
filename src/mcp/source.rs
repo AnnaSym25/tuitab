@@ -161,110 +161,31 @@ pub fn load(server: &mut super::Server, source: &Source) -> Result<DataFrame, St
     Ok(df)
 }
 
-/// Whether a path is a pattern rather than a name.
-///
-/// `Path::exists` is false for `db/*.csv` however many files it would match, so a
-/// pattern has to be recognised before anything asks the filesystem about it — which is
-/// what used to answer "No such file" to the very form tuitab's own error advised.
-fn is_pattern(path: &Path) -> bool {
-    path.to_string_lossy()
-        .contains(['*', '?', '[', ']'].as_slice())
-}
-
-/// Every file a pattern names, in a fixed order.
-fn matches_of(pattern: &str) -> Result<Vec<PathBuf>, String> {
-    let mut found: Vec<PathBuf> = glob::glob(pattern)
-        .map_err(|e| format!("'{}' is not a usable pattern: {}", pattern, e))?
-        .filter_map(std::result::Result::ok)
-        .filter(|p| p.is_file())
-        .collect();
-    // Sorted, so the same pattern gives the same table twice — the filesystem's own
-    // order is not one.
-    found.sort();
-    Ok(found)
-}
-
 /// Read every file a pattern matches as one table.
 ///
-/// The files have to agree on their columns: a table stacked out of frames that do not
-/// is not an answer, it is a mess with a row count.  Which file broke the agreement is
-/// named, because that is the one to look at.
+/// The stacking itself lives in [`crate::data::io::load_pattern`], shared with the
+/// terminal — what the MCP server adds is its own idea of opening one file, which
+/// carries the `container` and `format` the model asked for.
 fn load_pattern(source: &Source) -> Result<DataFrame, String> {
     let pattern = source.path.to_string_lossy().to_string();
-    let files = matches_of(&pattern)?;
-    let Some((first, rest)) = files.split_first() else {
-        // Not "No such file": the pattern is fine, nothing matched it, and those call
-        // for different next moves.
-        return Err(format!("glob matched no files: {}", pattern));
-    };
-
-    let one = |p: &Path| {
+    let records = matches!(source.extension().as_str(), "md" | "markdown");
+    io::load_pattern(&pattern, records, |p| {
         load_single(&Source {
             path: p.to_path_buf(),
             ..source.clone()
         })
-    };
-    let head = one(first)?;
-    if rest.is_empty() {
-        return Ok(head);
-    }
-
-    // A page is a record, and records differ: one has `tags`, the next has not, and a
-    // site where every page carried the same keys would not need a table to check it.
-    // So markdown is unioned, missing fields arriving as NULL — the way a list of JSON
-    // objects already behaves.  A csv or a parquet is a table, where a column set that
-    // does not match means the pattern caught a file it should not have, and saying so
-    // is worth more than a sparse frame.
-    let records = matches!(source.extension().as_str(), "md" | "markdown");
-    let names: Vec<&str> = head.columns.iter().map(|c| c.name.as_str()).collect();
-    let mut frames = vec![head.df.clone()];
-    for path in rest {
-        let next = one(path)?;
-        let next_names: Vec<&str> = next.columns.iter().map(|c| c.name.as_str()).collect();
-        if !records && next_names != names {
-            return Err(format!(
-                "{} has different columns from {}: [{}] against [{}]. A pattern reads \
-                 files that hold the same table.",
-                path.display(),
-                first.display(),
-                next_names.join(", "),
-                names.join(", ")
-            ));
-        }
-        frames.push(next.df.clone());
-    }
-
-    let combined = if records {
-        polars::functions::concat_df_diagonal(&frames).map_err(|e| {
-            format!(
-                "{} matched {} files that could not be read as one table: {}",
-                pattern,
-                files.len(),
-                e
-            )
-        })?
-    } else {
-        let mut stacked = frames[0].clone();
-        for (frame, path) in frames[1..].iter().zip(rest) {
-            stacked.vstack_mut(frame).map_err(|e| {
-                format!(
-                    "{} could not be stacked onto {}: {}",
-                    path.display(),
-                    first.display(),
-                    e
-                )
-            })?;
-        }
-        stacked
-    };
-    io::wrap_polars_df(combined)
-        .map_err(|e| format!("{} matched {} files: {}", pattern, files.len(), e))
+        // Plain `eyre!` on a string is `Report::msg`, so `to_string` below hands back
+        // exactly this text.  Nothing between here and there may wrap it.
+        .map_err(|e| color_eyre::eyre::eyre!(e))
+    })
+    .map(|(df, _)| df)
+    .map_err(|e| e.to_string())
 }
 
 /// Load without consulting or filling the cache.  `join` uses this: its
 /// right-hand side would otherwise evict the frame the pipeline is built on.
 pub fn load_once(source: &Source) -> Result<DataFrame, String> {
-    if is_pattern(&source.path) {
+    if io::is_pattern(&source.path) {
         return load_pattern(source);
     }
     // A directory is a list of files, which is what the instructions have always said

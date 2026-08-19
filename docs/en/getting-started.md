@@ -90,6 +90,29 @@ tuitab orders.csv customers.csv products.parquet
 Each file becomes a row showing its name, size, and modified time. `Enter` opens
 the highlighted file; `Esc` / `q` returns to the list.
 
+## Read many files as one table
+
+A quoted glob pattern reaches tuitab instead of the shell, and every file it
+matches is read as one table:
+
+```sh
+tuitab 'data/*.csv'
+tuitab 'content/**/index.md'
+```
+
+The quotes are the whole difference. Unquoted, the shell expands the pattern into
+several arguments and you get the file list above — useful for picking one file,
+not for reading them together.
+
+Tabular files have to agree on their columns; the one that does not is named in
+the error rather than folded in, because a table stacked out of frames that
+disagree is a mess with a row count. Markdown pages are records, so a pattern over
+them unions instead: a field one page lacks arrives NULL, which is what turns a
+static site into a table you can group and count.
+
+A pattern is not a file. The sheet has no path to reload from, and `Ctrl+S` asks
+where to write rather than offering a name with a `*` in it.
+
 ## Browse a directory
 
 Point tuitab at a folder (or run it with no arguments to use the current one):

@@ -167,6 +167,110 @@ pub fn open_target(
     })
 }
 
+/// Whether a path is a pattern rather than a name.
+///
+/// `Path::exists` is false for `db/*.csv` however many files it would match, so a
+/// pattern has to be recognised before anything asks the filesystem about it — which is
+/// what used to answer "No such file" to the very form tuitab's own error advised.
+/// Ask it only about a path that is not there: `report[1].csv` is a real name a browser
+/// hands out, and a file that exists is never a pattern.
+pub fn is_pattern(path: &Path) -> bool {
+    path.to_string_lossy()
+        .contains(['*', '?', '[', ']'].as_slice())
+}
+
+/// Every file a pattern names, in a fixed order.
+fn glob_matches(pattern: &str) -> Result<Vec<std::path::PathBuf>> {
+    let mut found: Vec<std::path::PathBuf> = glob::glob(pattern)
+        .map_err(|e| eyre!("'{}' is not a usable pattern: {}", pattern, e))?
+        .filter_map(std::result::Result::ok)
+        .filter(|p| p.is_file())
+        .collect();
+    // Sorted, so the same pattern gives the same table twice — the filesystem's own
+    // order is not one.
+    found.sort();
+    Ok(found)
+}
+
+/// Read every file a pattern matches as one table, and how many files that was.
+///
+/// The files have to agree on their columns: a table stacked out of frames that do not
+/// is not an answer, it is a mess with a row count.  Which file broke the agreement is
+/// named, because that is the one to look at.
+///
+/// `records` unions instead of stacking — a page is a record and records differ.
+/// `one` is how the caller opens a single file: the MCP server honours the container
+/// and format it was handed, the terminal goes through [`open_target`].  That is the
+/// only thing the two surfaces disagree about, so it is the only thing passed in.
+pub fn load_pattern(
+    pattern: &str,
+    records: bool,
+    one: impl Fn(&Path) -> Result<DataFrame>,
+) -> Result<(DataFrame, usize)> {
+    let files = glob_matches(pattern)?;
+    let Some((first, rest)) = files.split_first() else {
+        // Not "No such file": the pattern is fine, nothing matched it, and those call
+        // for different next moves.
+        return Err(eyre!("glob matched no files: {}", pattern));
+    };
+
+    let head = one(first)?;
+    if rest.is_empty() {
+        return Ok((head, 1));
+    }
+
+    // A page is a record, and records differ: one has `tags`, the next has not, and a
+    // site where every page carried the same keys would not need a table to check it.
+    // So markdown is unioned, missing fields arriving as NULL — the way a list of JSON
+    // objects already behaves.  A csv or a parquet is a table, where a column set that
+    // does not match means the pattern caught a file it should not have, and saying so
+    // is worth more than a sparse frame.
+    let names: Vec<&str> = head.columns.iter().map(|c| c.name.as_str()).collect();
+    let mut frames = vec![head.df.clone()];
+    for path in rest {
+        let next = one(path)?;
+        let next_names: Vec<&str> = next.columns.iter().map(|c| c.name.as_str()).collect();
+        if !records && next_names != names {
+            return Err(eyre!(
+                "{} has different columns from {}: [{}] against [{}]. A pattern reads \
+                 files that hold the same table.",
+                path.display(),
+                first.display(),
+                next_names.join(", "),
+                names.join(", ")
+            ));
+        }
+        frames.push(next.df.clone());
+    }
+
+    let combined = if records {
+        polars::functions::concat_df_diagonal(&frames).map_err(|e| {
+            eyre!(
+                "{} matched {} files that could not be read as one table: {}",
+                pattern,
+                files.len(),
+                e
+            )
+        })?
+    } else {
+        let mut stacked = frames[0].clone();
+        for (frame, path) in frames[1..].iter().zip(rest) {
+            stacked.vstack_mut(frame).map_err(|e| {
+                eyre!(
+                    "{} could not be stacked onto {}: {}",
+                    path.display(),
+                    first.display(),
+                    e
+                )
+            })?;
+        }
+        stacked
+    };
+    let df = wrap_polars_df(combined)
+        .map_err(|e| eyre!("{} matched {} files: {}", pattern, files.len(), e))?;
+    Ok((df, files.len()))
+}
+
 pub fn load_file_as(
     path: &Path,
     delimiter: Option<u8>,

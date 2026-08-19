@@ -87,7 +87,17 @@ pub fn run() -> Result<()> {
     } else if cli.files.len() >= 2 {
         for p in &cli.files {
             if !p.exists() {
-                eprintln!("Error: '{}': no such file or directory", p.display());
+                if data::io::is_pattern(p) {
+                    // Otherwise "no such file" for a pattern that matches plenty, which
+                    // is the same lie the single-file path used to tell.
+                    eprintln!(
+                        "Error: '{}': a pattern reads its files as one table, so it goes \
+                         on its own — not alongside other arguments.",
+                        p.display()
+                    );
+                } else {
+                    eprintln!("Error: '{}': no such file or directory", p.display());
+                }
                 std::process::exit(1);
             }
         }

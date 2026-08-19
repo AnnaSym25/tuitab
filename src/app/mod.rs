@@ -237,6 +237,64 @@ impl App {
         ))
     }
 
+    /// Open every file a pattern matches as one sheet.
+    ///
+    /// The same reading the MCP server gives it, through the same code: a table has to
+    /// agree on its columns and the file that does not is named, while markdown pages
+    /// are records and are unioned.  Only `tuitab 'data/*.csv'` arrives here — unquoted,
+    /// the shell expands first and `from_file_list` shows the listing instead.
+    fn from_pattern(
+        pattern: &Path,
+        delimiter: Option<char>,
+        forced: Option<crate::data::doc::Format>,
+    ) -> Result<Self> {
+        let text = pattern.to_string_lossy().into_owned();
+        let delim_byte = delimiter.map(|c| c as u8);
+        let ext = pattern
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default()
+            .to_lowercase();
+        // `--type` names a structured format, and those are tables, not bags of records.
+        let records = forced.is_none() && matches!(ext.as_str(), "md" | "markdown");
+
+        // ponytail: a pattern loads on the main thread, so no spinner. The async branch
+        // in `new_as` takes a single path and returns a single `Opened`; teaching it to
+        // stack is its own job, worth doing when a glob over large files starts hurting.
+        let (dataframe, files) = crate::data::io::load_pattern(&text, records, |p| {
+            crate::data::io::open_target(p, delim_byte, forced).map(|o| o.df)
+        })?;
+        let row_count = dataframe.visible_row_count();
+
+        let mut root_sheet = Sheet::new(text.clone(), dataframe);
+        root_sheet.source_delimiter = delim_byte;
+        // No `source_path`: a pattern is not a file.  Leaving it set is how the pattern
+        // used to be mistaken for a new file's name — `Ctrl+S` offering to create one
+        // with a `*` in it, `[new]` in the title bar, and `r` reloading a single file
+        // out of the several on screen.  Reload therefore says it cannot, which is true.
+        root_sheet.save_name_hint = Some(if ext.is_empty() {
+            "stacked".to_string()
+        } else {
+            format!("stacked.{}", ext)
+        });
+
+        let hint = root_sheet.save_name_hint.clone().unwrap_or_default();
+        Ok(Self::init(
+            SheetStack::new(root_sheet),
+            AppMode::Normal,
+            // The file count is the only evidence the pattern caught what was meant.
+            format!(
+                "Loaded {} rows from {} files matching {}",
+                row_count, files, text
+            ),
+            SaveState {
+                input: TextInput::with_value(hint),
+                ..Default::default()
+            },
+            None,
+        ))
+    }
+
     /// Open `path`, optionally forcing a structured format instead of trusting the
     /// extension — this is what `--type yaml deploy.conf` does.
     pub fn new_as(
@@ -245,6 +303,11 @@ impl App {
         forced_format: Option<crate::data::doc::Format>,
     ) -> Result<Self> {
         if !path.exists() {
+            // Asked only here: `is_pattern` is a test for `* ? [ ]`, and `report[1].csv`
+            // is a name a browser hands out.  A file that is there is never a pattern.
+            if crate::data::io::is_pattern(path) {
+                return App::from_pattern(path, delimiter, forced_format);
+            }
             return App::blank_at(path);
         }
         let delim_byte = delimiter.map(|c| c as u8);
