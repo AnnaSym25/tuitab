@@ -2086,7 +2086,8 @@ impl App {
     }
 
     fn execute_join(&mut self) {
-        let join_type = crate::data::join::JoinType::all()[self.join.type_index];
+        use crate::data::join::JoinType;
+        let join_type = JoinType::all()[self.join.type_index];
         let left_keys = self.join.left_keys.clone();
         let right_keys = self.join.right_keys.clone();
         let other_title = self.join.other_title.clone();
@@ -2101,6 +2102,21 @@ impl App {
             }
         };
 
+        let mismatch = left_keys
+            .iter()
+            .zip(&right_keys)
+            .find_map(|(lk, rk)| crate::data::join::key_type_mismatch(&left_df, lk, &right_df, rk));
+        if let Some(why) = mismatch {
+            self.join.other_df = Some(right_df);
+            self.status_message = format!(
+                "{} impossible: {}. Change the column type (t) so both keys match, then run it again",
+                join_type.sql_name(),
+                why
+            );
+            self.mode = AppMode::JoinSelectRightKeys;
+            return;
+        }
+
         match crate::data::join::join_dataframes(
             &left_df,
             &right_df,
@@ -2111,7 +2127,8 @@ impl App {
             Ok(result_df) => {
                 let row_count = result_df.visible_row_count();
                 let left_title = self.stack.active().title.clone();
-                let result_title = format!("{} JOIN {}", left_title, other_title);
+                let result_title =
+                    format!("{} {} {}", left_title, join_type.sql_name(), other_title);
                 let new_sheet = crate::sheet::Sheet::new(result_title, result_df);
                 self.stack.push(new_sheet);
 
@@ -2145,7 +2162,31 @@ impl App {
                     }
                 } else {
                     self.mode = AppMode::Normal;
-                    self.status_message = format!("JOIN result: {} rows", row_count);
+                    self.status_message = match join_type {
+                        JoinType::Anti if row_count == 0 => {
+                            format!(
+                                "ANTI JOIN: every row of {} found in {}",
+                                left_title, other_title
+                            )
+                        }
+                        JoinType::Anti => format!(
+                            "ANTI JOIN: {} rows of {} not found in {}",
+                            row_count, left_title, other_title
+                        ),
+                        JoinType::Semi => format!(
+                            "SEMI JOIN: {} rows of {} found in {}",
+                            row_count, left_title, other_title
+                        ),
+                        JoinType::Diff => {
+                            let [same, changed, removed, added] =
+                                crate::data::join::diff_counts(&self.stack.active().dataframe);
+                            format!(
+                                "DIFF: {} same, {} changed, {} removed, {} added",
+                                same, changed, removed, added
+                            )
+                        }
+                        _ => format!("JOIN result: {} rows", row_count),
+                    };
                 }
             }
             Err(e) => {
@@ -2696,7 +2737,69 @@ impl App {
 
     // ── Z Prefix (Column Operations) ──────────────────────────────────────────
 
+    /// Run a column operation on a doc-backed sheet.  It changes keys in the tree, and
+    /// the table is rebuilt from it, so the cell→node mapping stays true.
+    /// `op` gets the cursor column and returns the table, the new cursor column and the
+    /// status line.
+    fn doc_column_op(
+        &mut self,
+        mode_after: AppMode,
+        op: impl FnOnce(
+            &mut crate::data::io::doc_io::DocState,
+            usize,
+        )
+            -> color_eyre::Result<(crate::data::dataframe::DataFrame, usize, String)>,
+    ) {
+        self.mode = mode_after;
+        let s = self.stack.active_mut();
+        if !s.doc_mapping_ok() {
+            self.status_message =
+                "The table no longer matches the document — reopen the sheet".to_string();
+            return;
+        }
+        let col = s.cursor_col;
+        s.push_undo();
+        let doc = s.doc.as_mut().expect("doc sheet");
+        match op(doc, col) {
+            Ok((df, at, msg)) => {
+                s.dataframe = df;
+                s.dataframe.modified = true;
+                // The table comes back in the tree's order; a kept sort marker would
+                // claim an order the rows no longer have.
+                s.sort_keys.clear();
+                s.cursor_col = at.min(s.dataframe.col_count().saturating_sub(1));
+                s.table_state.select_column(Some(s.cursor_col));
+                s.left_col = s.left_col.min(s.cursor_col);
+                s.clamp_cursor();
+                self.status_message = msg;
+            }
+            Err(e) => {
+                s.undo_stack.pop();
+                self.status_message = e.to_string();
+            }
+        }
+    }
+
     fn apply_rename_column(&mut self) {
+        if self.stack.active().doc.is_some() {
+            let new_name = self
+                .stack
+                .active()
+                .rename_column_input
+                .as_str()
+                .trim()
+                .to_string();
+            self.stack.active_mut().rename_column_input.clear();
+            self.doc_column_op(AppMode::Normal, |doc, col| {
+                let (df, n) = doc.rename_field(col, &new_name)?;
+                Ok((
+                    df,
+                    col,
+                    format!("Renamed key to '{}' in {} records", new_name, n),
+                ))
+            });
+            return;
+        }
         let s = self.stack.active_mut();
         let new_name = s.rename_column_input.as_str().trim().to_string();
         let col = s.cursor_col;
@@ -2714,6 +2817,13 @@ impl App {
     }
 
     fn delete_column(&mut self) {
+        if self.stack.active().doc.is_some() {
+            self.doc_column_op(AppMode::Normal, |doc, col| {
+                let (df, n) = doc.delete_field(col)?;
+                Ok((df, col, format!("Deleted the key from {} records", n)))
+            });
+            return;
+        }
         let s = self.stack.active_mut();
         let col = s.cursor_col;
         if s.dataframe.col_count() <= 1 {
@@ -2734,6 +2844,24 @@ impl App {
     }
 
     fn apply_insert_column(&mut self) {
+        if self.stack.active().doc.is_some() {
+            let name = self.stack.active().insert_column_input.as_str().to_string();
+            self.stack.active_mut().insert_column_input.clear();
+            self.doc_column_op(AppMode::Normal, |doc, col| {
+                let (df, n, at) = doc.insert_field(col, &name)?;
+                let toml = if doc.format() == crate::data::doc::Format::Toml {
+                    " — TOML keeps it only once filled"
+                } else {
+                    ""
+                };
+                Ok((
+                    df,
+                    at,
+                    format!("Added key '{}' to {} records{}", name, n, toml),
+                ))
+            });
+            return;
+        }
         let s = self.stack.active_mut();
         let name = s.insert_column_input.as_str().to_string();
         if !name.is_empty() {
@@ -2750,6 +2878,22 @@ impl App {
     }
 
     fn move_col_left(&mut self) {
+        if self.stack.active().doc.is_some() {
+            self.doc_column_op(AppMode::ColumnMove, |doc, col| {
+                let other = col
+                    .checked_sub(1)
+                    .filter(|o| *o < doc.col_roles.len())
+                    .ok_or_else(|| color_eyre::eyre::eyre!("already at the edge"))?;
+                let (df, at) = doc.move_field(col, other)?;
+                let name = df.columns[at].name.clone();
+                Ok((
+                    df,
+                    at,
+                    format!("Move column '{}': ←/→ to reorder, Esc to exit", name),
+                ))
+            });
+            return;
+        }
         let s = self.stack.active_mut();
         let col = s.cursor_col;
         if col > 0 {
@@ -2770,6 +2914,21 @@ impl App {
     }
 
     fn move_col_right(&mut self) {
+        if self.stack.active().doc.is_some() {
+            self.doc_column_op(AppMode::ColumnMove, |doc, col| {
+                let other = Some(col + 1)
+                    .filter(|o| *o < doc.col_roles.len())
+                    .ok_or_else(|| color_eyre::eyre::eyre!("already at the edge"))?;
+                let (df, at) = doc.move_field(col, other)?;
+                let name = df.columns[at].name.clone();
+                Ok((
+                    df,
+                    at,
+                    format!("Move column '{}': ←/→ to reorder, Esc to exit", name),
+                ))
+            });
+            return;
+        }
         let s = self.stack.active_mut();
         let col = s.cursor_col;
         if col + 1 < s.dataframe.col_count() {

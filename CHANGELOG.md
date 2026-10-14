@@ -7,6 +7,125 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-10-07
+
+### Fixed
+
+- **`concat`, `substring`, `date_format` and the other functions Polars has no
+  form for return their values again.** A computed column that tuitab's own
+  interpreter filled was cast to a number, which emptied every string and kept
+  only two decimals of every number. Its dates and comparisons now come out as
+  dates and booleans.
+- **A text column stays as written in an expression.** `concat(sku, "-", size)`
+  turned `007` into `7` and `nan` into `NaN`. Where an operation needs a number
+  or a date, text that reads as one is still used as one: `sku * 2`,
+  `code == 7`, `year(updated_at)`, and a text `true`/`false` as a condition.
+- **Text compared with a date compares as a date.** It used to be empty, so a
+  filter dropped the row.
+- **`contains()` on an empty cell is empty** instead of matching the word
+  `Null`.
+- **Date arithmetic past the calendar and `date_format` with a pattern it cannot
+  use no longer crash the TUI.** They give an empty value.
+- **`diff` says which `<column>_right` already exists** instead of passing on
+  Polars' advice about a parameter tuitab does not have.
+- **MCP errors end at the reason**, without the Polars query plan after it.
+
+### Changed
+
+- `+` of two text columns joins them in every expression, as it already did
+  when Polars ran it; an empty string in a text column is an empty string, not
+  NULL.
+- `len()` gives an integer.
+
+## [0.10.1] - 2026-10-06
+
+### Fixed
+
+- **Chained joins over tables that share a column no longer crash.** Joining
+  three tables that all have, say, `updated_at` gave two `updated_at_right`
+  columns, and the next filter or aggregate panicked — in the MCP server that
+  ended the process, and the client lost every tuitab tool. The second one is
+  now `updated_at_right_1`. A right table that already holds `v_right` next to
+  `v` joins too, where it used to be refused.
+- **A crash inside one MCP tool call no longer stops the server.** The call
+  returns an error result and the server keeps answering.
+
+## [0.10.0] - 2026-09-17
+
+### Added
+
+- **Compare two tables like `git diff`.** The JOIN wizard (`J`) has a `DIFF`
+  type: the keys say which rows are the same row, every other shared column is
+  compared, and the result marks each row `=` unchanged, `~` changed (yellow,
+  with the differing cells highlighted), `-` only in the left table (red) or
+  `+` only in the right one (green). `_diff` is an ordinary pinned column, so
+  filtering on it or counting it with `F` works as on any other; the right-hand
+  values of a changed row sit in `<column>_right`. NULL equals NULL. Keys must
+  be unique on both sides — DIFF says so instead of guessing which rows to pair.
+  ([#46](https://github.com/denisotree/tuitab/issues/46))
+- **`ANTI` and `SEMI` joins** keep the left rows without, or with, a match on
+  the keys, and count a NULL key as equal to a NULL key.
+- **The key picker shows each column's type**, marks a right key whose type
+  cannot meet its left partner in red, and `a` takes every column as a key —
+  two keystrokes to diff tables with the same columns.
+- **`tuitab_calc`, a fifth MCP tool, for calculations with no file at all.** A
+  model sends named steps (`rate = 0.12 / 12`, `payment = pmt(rate, 360,
+  250000)`) and reads every value back instead of doing arithmetic in its head.
+  Numbers are 28-digit decimals, so `0.1 + 0.2` is `0.3`, and each value says
+  whether it is exact, rounded or approximate. Math, statistics over lists,
+  finance with spreadsheet signatures (`pmt`, `fv`, `pv`, `npv`, `irr`), the
+  normal, t, chi-square, Poisson and binomial distributions, and Holm and
+  Benjamini–Hochberg corrections.
+- MCP `join` accepts `how: anti`, `semi` and `diff`.
+
+### Changed
+
+- **Join keys of different types are refused with a sentence** naming both
+  columns and both types, where Polars used to fail with its own error. Integer,
+  float and datetime keys that differ only in width or precision are matched.
+
+## [0.9.7] - 2026-09-16
+
+### Added
+
+- **Debian and Ubuntu install with `apt install tuitab`.** Every release now
+  builds a `.deb` for amd64 and arm64 and publishes it to a signed APT
+  repository at `https://denisotree.github.io/tuitab/apt`, so `apt upgrade`
+  picks up new versions; the README has the three lines that add it. The
+  package installs `tuitab` with `ttab` and `ttb` as symlinks, and each `.deb`
+  is also attached to the GitHub release.
+
+### Changed
+
+- **Linux binaries are built on Ubuntu 22.04.** They need glibc 2.35 at most, so
+  the release tarballs and packages run on Debian 12 and Ubuntu 22.04, which a
+  24.04 build did not.
+
+## [0.9.6] - 2026-09-16
+
+### Added
+
+- **Columns of a JSON/YAML/TOML records view can be deleted, renamed, inserted
+  and moved.** A column there is a key, so `zd`, `ze`, `zi` and `z←`/`z→` now
+  change that key in every record that holds it instead of being refused with a
+  pointer at `E`. Records are sparse: a record without the key is skipped. A
+  rename that clashes with an existing key in any one record changes nothing; a
+  new key is null and sits before the cursor column (TOML writes it once it is
+  filled); a move that the first-seen key order would not show is rolled back
+  and says so. The table is rebuilt from the document after each, so cell edits
+  keep reaching the right node, and `U` undoes them in the document. Key/value
+  and list views keep their fixed columns.
+
+### Fixed
+
+- **`ze` on a document sheet renamed only the table header.** The key in the
+  document stayed as it was, so the new name vanished on the next reprojection
+  and never reached the saved file.
+
+### Security
+
+- rustls bumped to 0.23.45 for RUSTSEC-2026-0285.
+
 ## [0.9.5] - 2026-08-19
 
 ### Added
@@ -1125,7 +1244,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Non-English keyboard remapping
 - Three binary aliases: `tuitab`, `ttab`, `tt`
 
-[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.9.5...HEAD
+[Unreleased]: https://github.com/denisotree/tuitab/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/denisotree/tuitab/compare/v0.10.1...v0.10.2
+[0.10.1]: https://github.com/denisotree/tuitab/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/denisotree/tuitab/compare/v0.9.7...v0.10.0
+[0.9.7]: https://github.com/denisotree/tuitab/compare/v0.9.6...v0.9.7
+[0.9.6]: https://github.com/denisotree/tuitab/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/denisotree/tuitab/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/denisotree/tuitab/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/denisotree/tuitab/compare/v0.9.2...v0.9.3

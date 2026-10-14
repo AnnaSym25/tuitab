@@ -1467,22 +1467,7 @@ impl DataFrame {
 
                     let mut meta = ColumnMeta::new(name.to_string());
                     // Map the polars data type to our ColumnType if possible
-                    meta.col_type = match dtype {
-                        polars::prelude::DataType::Int8
-                        | polars::prelude::DataType::Int16
-                        | polars::prelude::DataType::Int32
-                        | polars::prelude::DataType::Int64
-                        | polars::prelude::DataType::UInt8
-                        | polars::prelude::DataType::UInt16
-                        | polars::prelude::DataType::UInt32
-                        | polars::prelude::DataType::UInt64 => ColumnType::Integer,
-                        polars::prelude::DataType::Float32 | polars::prelude::DataType::Float64 => {
-                            ColumnType::Float
-                        }
-                        polars::prelude::DataType::Date => ColumnType::Date,
-                        polars::prelude::DataType::Datetime(_, _) => ColumnType::Datetime,
-                        _ => ColumnType::String,
-                    };
+                    meta.col_type = crate::data::io::column_type_of(&dtype);
                     meta.expression = Some(expr.clone());
                     self.columns.push(meta);
                     self.aggregates_cache = None;
@@ -1511,31 +1496,56 @@ impl DataFrame {
             .map(|(i, c)| (c.name.as_str(), i))
             .collect();
 
-        let total_rows = self.df.height();
-        let mut new_col = Vec::with_capacity(total_rows);
+        use crate::data::expression::Value;
+        let values: Vec<Value> = (0..self.df.height())
+            .map(|physical_idx| expr.eval(physical_idx, &col_lookup, self))
+            .collect();
 
-        for physical_idx in 0..total_rows {
-            let val = expr.eval(physical_idx, &col_lookup, self);
-            match val {
-                crate::data::expression::Value::Number(n) => {
-                    if n.is_nan() {
-                        new_col.push("—".to_string());
-                    } else if n.fract() == 0.0 {
-                        new_col.push(format!("{}", n as i64));
-                    } else {
-                        new_col.push(format!("{:.2}", n));
-                    }
-                }
-                v => new_col.push(v.to_string()),
-            }
-        }
-
-        let new_series = Series::new(name.into(), &new_col);
-
-        // Try casting to Float64 if all values are numbers (slow path consistency)
-        let final_series = new_series
-            .cast(&polars::prelude::DataType::Float64)
-            .unwrap_or(new_series);
+        // A column of one kind when every value is that kind or missing, text when
+        // they are mixed; a column with no values at all is a float one.  Casting the
+        // text of any result to float instead — the cast never fails, it nulls what
+        // does not parse — turned every string `concat` or `substring` made into null.
+        let all = |kind: fn(&Value) -> bool| values.iter().all(|v| *v == Value::Null || kind(v));
+        let final_series = if all(|v| matches!(v, Value::Number(_))) {
+            let numbers: Vec<Option<f64>> = values
+                .iter()
+                .map(|v| match v {
+                    Value::Number(n) if !n.is_nan() => Some(*n),
+                    _ => None,
+                })
+                .collect();
+            Series::new(name.into(), numbers)
+        } else if all(|v| matches!(v, Value::Boolean(_))) {
+            let flags: Vec<Option<bool>> = values.iter().map(Value::as_bool).collect();
+            Series::new(name.into(), flags)
+        } else if all(|v| matches!(v, Value::Date(_))) {
+            let dates: Vec<Option<chrono::NaiveDate>> = values
+                .iter()
+                .map(|v| match v {
+                    Value::Date(d) => Some(*d),
+                    _ => None,
+                })
+                .collect();
+            Series::new(name.into(), dates)
+        } else if all(|v| matches!(v, Value::Datetime(_))) {
+            let stamps: Vec<Option<chrono::NaiveDateTime>> = values
+                .iter()
+                .map(|v| match v {
+                    Value::Datetime(dt) => Some(*dt),
+                    _ => None,
+                })
+                .collect();
+            Series::new(name.into(), stamps)
+        } else {
+            let texts: Vec<Option<String>> = values
+                .iter()
+                .map(|v| match v {
+                    Value::Null => None,
+                    v => Some(v.to_string()),
+                })
+                .collect();
+            Series::new(name.into(), texts)
+        };
 
         self.df = self
             .df
@@ -1546,10 +1556,7 @@ impl DataFrame {
             .map_err(|e| e.to_string())?;
 
         let mut meta = ColumnMeta::new(name.to_string());
-        meta.col_type = match self.df.column(name).unwrap().dtype() {
-            polars::prelude::DataType::Float64 => ColumnType::Float,
-            _ => ColumnType::String,
-        };
+        meta.col_type = crate::data::io::column_type_of(self.df.column(name).unwrap().dtype());
         meta.expression = Some(expr.clone());
         self.columns.push(meta);
         self.aggregates_cache = None;

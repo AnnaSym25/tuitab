@@ -15,10 +15,12 @@
 //! Transport is stdio, so **nothing may be written to stdout except protocol
 //! messages**.  Diagnostics go to stderr.
 
+pub mod calc;
 pub mod pipeline;
 pub mod render;
 pub mod rpc;
 pub mod source;
+mod special;
 pub mod tools;
 pub mod write;
 
@@ -130,16 +132,42 @@ fn call_tool(server: &mut Server, id: Value, params: &Value) -> Value {
 
     let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
-    match tools::call(server, name, &arguments) {
-        Ok(payload) => rpc::success(id, rpc::tool_success(payload)),
+    // A panic in one call must not end the process: the client would lose every
+    // tool until it reconnects.  The panic hook has already reported it on stderr.
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tools::call(server, name, &arguments)
+    }));
+
+    tool_response(id, outcome)
+}
+
+/// The response to `tools/call`, from how the tool ended: with a result, with a
+/// failure the model should see, as an unknown tool, or in a panic.
+fn tool_response(
+    id: Value,
+    outcome: std::thread::Result<Result<Value, tools::CallError>>,
+) -> Value {
+    match outcome {
+        Ok(Ok(payload)) => rpc::success(id, rpc::tool_success(payload)),
         // An unknown tool breaks the protocol contract; a tool that ran and
         // failed is a result the model should see and react to.
-        Err(tools::CallError::UnknownTool(n)) => rpc::error(
+        Ok(Err(tools::CallError::UnknownTool(n))) => rpc::error(
             Some(id),
             rpc::INVALID_PARAMS,
             format!("Unknown tool: {}", n),
         ),
-        Err(tools::CallError::Failed(message)) => rpc::success(id, rpc::tool_error(message)),
+        Ok(Err(tools::CallError::Failed(message))) => rpc::success(id, rpc::tool_error(message)),
+        Err(panic) => {
+            let why = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "no message".to_string());
+            rpc::success(
+                id,
+                rpc::tool_error(format!("tuitab crashed on this call (a bug): {}", why)),
+            )
+        }
     }
 }
 
@@ -167,4 +195,21 @@ pub fn serve(write: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A panic takes a bug to trigger, so the boundary is tested with one made up.
+    #[test]
+    fn a_panicking_tool_becomes_an_error_result() {
+        let outcome =
+            std::panic::catch_unwind(|| -> Result<Value, tools::CallError> { panic!("boom") });
+        let response = tool_response(json!(7), outcome);
+        assert_eq!(response["id"], json!(7));
+        assert_eq!(response["result"]["isError"], json!(true));
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("boom"), "{text}");
+    }
 }

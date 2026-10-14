@@ -145,7 +145,7 @@ fn malformed_input_is_a_parse_error_rather_than_a_crash() {
 }
 
 #[test]
-fn tools_list_offers_the_four_tools() {
+fn tools_list_offers_the_five_tools() {
     let mut server = Server::new();
     let response = send(
         &mut server,
@@ -164,7 +164,8 @@ fn tools_list_offers_the_four_tools() {
             "tuitab_inspect",
             "tuitab_query",
             "tuitab_describe",
-            "tuitab_jq"
+            "tuitab_jq",
+            "tuitab_calc"
         ]
     );
 
@@ -676,6 +677,116 @@ fn compute_adds_a_derived_column() {
     assert_eq!(cell(&result, 0, "decade"), json!(2.5));
 }
 
+/// Functions Polars cannot run are evaluated row by row, and that path used to
+/// cast its result to float — every string came back null.
+#[test]
+fn compute_string_functions_return_text() {
+    let path = tmp("compute_text.csv");
+    std::fs::write(&path, "updated_at\n2026-01-01\n").unwrap();
+    let mut server = Server::new();
+    let result = call(
+        &mut server,
+        "tuitab_query",
+        json!({"source": {"path": path}, "ops": [
+            {"compute": {"name": "s_s", "expr": "concat('a', 'b')"}},
+            {"compute": {"name": "s_col", "expr": "concat(updated_at, '-x')"}},
+            {"compute": {"name": "sub", "expr": "substring(updated_at, 0, 7)"}},
+            {"compute": {"name": "ln", "expr": "len(updated_at)"}},
+            {"compute": {"name": "yr", "expr": "year(updated_at) + 0.125"}}
+        ]}),
+    );
+    let type_of = |name: &str| {
+        result["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap()["type"]
+            .clone()
+    };
+    assert_eq!(cell(&result, 0, "s_s"), json!("ab"));
+    assert_eq!(type_of("s_s"), json!("string"));
+    assert_eq!(cell(&result, 0, "s_col"), json!("2026-01-01-x"));
+    assert_eq!(cell(&result, 0, "sub"), json!("2026-01"));
+    assert_eq!(cell(&result, 0, "ln"), json!(10));
+    assert_eq!(type_of("ln"), json!("integer"));
+    // Numbers stay numbers, unrounded.
+    assert_eq!(cell(&result, 0, "yr"), json!(2026.125));
+    assert_eq!(type_of("yr"), json!("float"));
+}
+
+/// A text column stays text in an expression: read by its look, `007` became 7.
+#[test]
+fn compute_keeps_a_text_column_as_written() {
+    let path = tmp("compute_codes.csv");
+    std::fs::write(&path, "sku,name\n007,Москва\nA12,\n1e3,nan\n").unwrap();
+    let mut server = Server::new();
+    let result = call(
+        &mut server,
+        "tuitab_query",
+        json!({"source": {"path": path}, "ops": [
+            {"compute": {"name": "label", "expr": "concat(sku, '|', name)"}},
+            {"compute": {"name": "head", "expr": "substring(name, 0, 3)"}}
+        ]}),
+    );
+    assert_eq!(cell(&result, 0, "label"), json!("007|Москва"));
+    // A NULL name joins as nothing.
+    assert_eq!(cell(&result, 1, "label"), json!("A12|"));
+    assert_eq!(cell(&result, 2, "label"), json!("1e3|nan"));
+    // Characters, not bytes.
+    assert_eq!(cell(&result, 0, "head"), json!("Мос"));
+    assert_eq!(cell(&result, 1, "head"), json!(null));
+    assert_eq!(cell(&result, 2, "head"), json!("nan"));
+}
+
+/// Polars appends its query plan and advice about its own API to an error; the
+/// model needs only the first sentence.
+#[test]
+fn an_operation_error_comes_without_the_polars_query_plan() {
+    let mut server = Server::new();
+    let message = call_expecting_failure(
+        &mut server,
+        "tuitab_query",
+        json!({"source": {"path": "test_data/sample.csv"}, "ops": [
+            {"group_by": {"by": ["department"],
+                          "agg": [{"col": "salary", "fn": "sum"}, {"col": "salary", "fn": "sum"}]}}
+        ]}),
+    );
+    assert!(message.contains("salary:sum"), "{message}");
+    assert!(!message.contains("Resolved plan"), "{message}");
+}
+
+/// Row-by-row results keep their kind: a date is a date, a comparison a boolean.
+#[test]
+fn compute_row_by_row_results_keep_their_type() {
+    let path = tmp("compute_types.csv");
+    std::fs::write(&path, "updated_at\n2026-01-01\n2026-03-05\n").unwrap();
+    let mut server = Server::new();
+    let result = call(
+        &mut server,
+        "tuitab_query",
+        json!({"source": {"path": path}, "ops": [
+            {"compute": {"name": "d", "expr": "date(updated_at)"}},
+            {"compute": {"name": "late", "expr": "month(updated_at) > 2"}},
+            {"compute": {"name": "t", "expr": "now()"}}
+        ]}),
+    );
+    let type_of = |name: &str| {
+        result["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap()["type"]
+            .clone()
+    };
+    assert_eq!(type_of("d"), json!("date"));
+    assert_eq!(cell(&result, 0, "d"), json!("2026-01-01"));
+    assert_eq!(cell(&result, 0, "late"), json!(false));
+    assert_eq!(cell(&result, 1, "late"), json!(true));
+    assert_eq!(type_of("t"), json!("datetime"));
+}
+
 // ── join ────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -693,6 +804,39 @@ fn join_brings_in_columns_from_a_second_file() {
     assert_eq!(result["row_count"], 2);
     assert_eq!(cell(&result, 0, "value"), json!(100));
     assert_eq!(cell(&result, 1, "value"), json!(200));
+}
+
+#[test]
+fn anti_join_keeps_the_rows_the_second_file_lacks() {
+    let mut server = Server::new();
+    let result = query(
+        &mut server,
+        json!([
+            {"join": {"source": {"path": "test_data/prices.csv"},
+                      "left_on": ["id"], "how": "anti"}}
+        ]),
+    );
+    // sample.csv holds ids 1..=20, prices.csv ids 1 and 2.
+    assert_eq!(result["row_count"], 18);
+}
+
+#[test]
+fn diff_join_marks_each_row() {
+    let mut server = Server::new();
+    let result = call(
+        &mut server,
+        "tuitab_query",
+        json!({"source": {"path": "test_data/diff_march.csv"}, "ops": [
+            {"join": {"source": {"path": "test_data/diff_april.csv"},
+                      "left_on": ["id"], "how": "diff"}}
+        ]}),
+    );
+    let status: Vec<Value> = (0..5).map(|i| cell(&result, i, "_diff")).collect();
+    assert_eq!(
+        status,
+        vec![json!("="), json!("="), json!("~"), json!("-"), json!("+")]
+    );
+    assert_eq!(cell(&result, 2, "amount_right"), json!(350));
 }
 
 // ── output shaping ──────────────────────────────────────────────────────────
@@ -2172,4 +2316,30 @@ fn inspecting_a_spreadsheet_gives_the_size_of_every_sheet() {
     assert_eq!(sheet["rows"], json!(20), "{}", listing);
     assert_eq!(sheet["columns"], json!(5), "{}", listing);
     std::fs::remove_file(&xlsx).unwrap();
+}
+
+/// Three files sharing an audit column, joined in a chain: the issue's exact
+/// request, which used to leave two `updated_at_right` columns and crash the count.
+#[test]
+fn chained_joins_on_tables_with_a_shared_column_can_be_aggregated() {
+    let (a, b, c) = (tmp("chain_a.csv"), tmp("chain_b.csv"), tmp("chain_c.csv"));
+    std::fs::write(&a, "id,b_id,updated_at\n1,10,2026-01-01\n2,20,2026-01-02\n").unwrap();
+    std::fs::write(
+        &b,
+        "id,c_id,updated_at\n10,100,2026-02-01\n20,200,2026-02-02\n",
+    )
+    .unwrap();
+    std::fs::write(&c, "id,updated_at\n100,2026-03-01\n200,2026-03-02\n").unwrap();
+
+    let mut server = Server::new();
+    let result = call(
+        &mut server,
+        "tuitab_query",
+        json!({"source": {"path": a}, "ops": [
+            {"join": {"source": {"path": b}, "left_on": ["b_id"], "right_on": ["id"], "how": "left"}},
+            {"join": {"source": {"path": c}, "left_on": ["c_id"], "right_on": ["id"], "how": "left"}},
+            {"aggregate": [{"col": "*", "fn": "count"}]}
+        ]}),
+    );
+    assert_eq!(cell(&result, 0, "count"), json!(2));
 }

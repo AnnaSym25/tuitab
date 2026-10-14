@@ -44,7 +44,8 @@ cat data.csv | tuitab -t csv      # read from a pipe
 - **Vim-style navigation** — `hjkl`, `gg`/`G`, page jumps, sticky pinned columns.
 - **Instant analysis** — per-column statistics, frequency tables, and charts
   (histogram, bar, line, grouped bar) rendered right in the terminal.
-- **Reshape on the fly** — pivot tables, JOINs across files, transpose, group by,
+- **Reshape on the fly** — pivot tables, JOINs across files, a `git diff`-style
+  comparison of two tables, transpose, group by,
   deduplication, computed columns and window functions (rank, running total,
   lag/lead, share of a group) from an expression language with `and` / `or` / `not`.
 - **Clean, fast, type-aware** — Polars-backed engine, Everforest theme, undo/redo,
@@ -102,7 +103,9 @@ press `W`, and type an aggregation formula such as `sum(revenue)`.
 ### JOIN across files
 
 Press `J` for a step-by-step wizard: pick another file (or an open sheet),
-choose `INNER` / `LEFT` / `RIGHT` / `OUTER`, and select the key columns.
+choose `INNER` / `LEFT` / `RIGHT` / `OUTER` / `ANTI` / `SEMI`, and select the key
+columns. `DIFF` compares two tables like `git diff`: unchanged, changed (with the
+differing cells marked), removed and added rows, each in its own colour.
 
 ![JOIN](https://raw.githubusercontent.com/denisotree/tuitab/master/.github/assets/join.gif)
 
@@ -163,13 +166,19 @@ yay -S tuitab          # pre-built binary: tuitab-bin
 git clone https://aur.archlinux.org/tuitab.git && cd tuitab && makepkg -si
 ```
 
-### Debian / Ubuntu
-
-Download the `.deb` from the [Releases page](https://github.com/denisotree/tuitab/releases), then:
+### Debian / Ubuntu (APT)
 
 ```sh
-sudo dpkg -i tuitab_*_amd64.deb
+curl -fsSL https://denisotree.github.io/tuitab/apt/tuitab.gpg \
+  | sudo tee /usr/share/keyrings/tuitab.gpg > /dev/null
+echo "deb [signed-by=/usr/share/keyrings/tuitab.gpg] https://denisotree.github.io/tuitab/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/tuitab.list
+sudo apt update && sudo apt install tuitab
 ```
+
+`apt upgrade` then picks up new releases. amd64 and arm64; Debian 12+ and Ubuntu
+22.04+. A single `.deb` is also attached to every
+[release](https://github.com/denisotree/tuitab/releases): `sudo apt install ./tuitab_*.deb`.
 
 ### Pre-built binaries
 
@@ -292,11 +301,13 @@ A source may be a glob — `content/**/index.md` reads every page of a static si
 one table, each page a row of its frontmatter — so a site can be checked against a
 database in one call rather than through an export script.
 
-Four tools: `tuitab_inspect` (columns, types, row count, sample rows),
+Five tools: `tuitab_inspect` (columns, types, row count, sample rows),
 `tuitab_query` (fifteen operations composed as a pipeline — filter, group by,
 window functions, pivot, join, dedup and the rest — returning JSON or writing
-xlsx/csv/parquet/sqlite), `tuitab_describe` (per-column statistics), and
-`tuitab_jq` (jq programs over nested JSON/YAML/TOML). Several questions can share
+xlsx/csv/parquet/sqlite), `tuitab_describe` (per-column statistics),
+`tuitab_jq` (jq programs over nested JSON/YAML/TOML), and `tuitab_calc` — any
+calculation, file or no file, in 28-digit decimals with math, statistics and
+finance functions, each value labelled exact, rounded or approximate. Several questions can share
 one call, and one of them failing does not cost the answers beside it.
 
 Two more appear with `--mcp-write`: `tuitab_write` works out what a change would
@@ -313,8 +324,9 @@ Every operation is shared with a keybinding rather than written twice, and a tes
 holds the two surfaces together: adding an action to the terminal fails to
 compile until someone says how a model reaches it.
 
-Costs no extra dependencies: the protocol is newline-delimited JSON-RPC, which
-`serde_json` already covers.
+The protocol is newline-delimited JSON-RPC, which `serde_json` already covers;
+`tuitab_calc` adds `rust_decimal` for exact arithmetic and `libm` for the normal
+distribution, and implements the other distributions itself.
 
 Full details in the [MCP server guide](https://github.com/denisotree/tuitab/blob/master/docs/en/mcp.md).
 

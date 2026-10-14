@@ -1,8 +1,8 @@
 //! Tool definitions and dispatch.
 //!
-//! Four tools, each a whole step of the model's working loop rather than a
+//! Five tools, each a whole step of the model's working loop rather than a
 //! mirror of a tuitab keybinding: find out what is in the file, compute over it,
-//! profile it, or walk a nested document.
+//! profile it, walk a nested document, or calculate with no file at all.
 
 use super::{pipeline, render, source, Server};
 use crate::data::describe;
@@ -95,7 +95,13 @@ OPERATIONS for tuitab_query
       specific aggregates and your own ordering.
   {\"pivot\": {\"index\":[\"region\"],\"on\":\"quarter\",\"formula\":\"sum(amount)\"}}
   {\"join\": {\"source\":{\"path\":\"prices.csv\"},\"left_on\":[\"id\"],\"how\":\"left\"}}
-      how: inner, left, right, outer. 'right_on' defaults to 'left_on'.
+      how: inner, left, right, outer, anti, semi, diff. 'right_on' defaults to 'left_on'. \
+      anti keeps the rows with no match in the other table, semi the rows with one; \
+      both keep this table's columns only and treat NULL keys as equal. diff compares \
+      the tables like git diff: the keys say which rows are the same row, every other \
+      shared column is compared, and a leading _diff column holds = (same), ~ (changed), \
+      - (only in this table) or + (only in the other). <col>_right holds the other \
+      table's value on ~ rows. Keys must be unique on both sides; NULL equals NULL.
   {\"dedup\": {\"by\":[\"id\"],\"keep\":\"first\"}}
       keep: first, last, min, max (both need \"on\": column), random (pass \
       \"seed\" to repeat the same choice).
@@ -142,6 +148,12 @@ extra, and several writes can build up one file. Replacing a table follows the s
 rule as replacing a file: output.overwrite, --mcp-write, and a plan holding the DROP, \
 CREATE and INSERT statements to be applied. The file a query read cannot be the file \
 it writes.
+
+ARITHMETIC
+Any calculation, file or no file — a total from the conversation, a loan payment, a \
+percentage change, a standard deviation of numbers the user typed — goes to tuitab_calc. \
+Do not do arithmetic in your head, not even two numbers. Quote the value it returns \
+and mention when its precision is not exact.
 
 NESTED DATA
 tuitab_query flattens JSON/YAML/TOML into a table. When the structure is deeper \
@@ -345,6 +357,53 @@ pub fn definitions(write: bool) -> Vec<Value> {
             },
             "annotations": {"readOnlyHint": true, "openWorldHint": false}
         }),
+        json!({
+            "name": "tuitab_calc",
+            "title": "Calculate",
+            "description":
+                "Evaluate arithmetic exactly — any calculation, not only over files. Numbers are \
+                 28-digit decimals, so 0.1 + 0.2 is 0.3 and money does not drift. Send a list of \
+                 named steps; a step can use the names of the steps before it. Every value comes \
+                 back as a string with its precision: exact, rounded (to 28 significant digits) \
+                 or approximate (floating point, about 15 digits — logarithms, trigonometry, \
+                 fractional powers, irr). Quote the value as returned.\n\
+                 Operators: + - * / % ^ (power, right-associative; -2^2 is -4), comparisons \
+                 == != < > <= >=, and / or / not, parentheses, lists [1, 2, 3]. Constants: pi, e.\n\
+                 Math: abs, round(x[, places]) (half away from zero), floor, ceil, trunc, sqrt, \
+                 exp, ln, log10, log(x[, base]), sin, cos, tan, asin, acos, atan (radians), \
+                 radians, degrees, min, max, factorial, gcd, lcm, if(cond, a, b).\n\
+                 Statistics (numbers or lists): sum, product, count, mean/avg, median, variance \
+                 and stdev (sample), var_p and stdev_p (population), percentile(list, p) with p \
+                 from 0 to 1 (like PERCENTILE.INC); erf, erfc, norm_cdf(z) and norm_inv(p) for the \
+                 standard normal distribution — p-values and critical values; holm(p-values) and \
+                 bh(p-values) return the list adjusted for multiple comparisons (Holm–Bonferroni, \
+                 Benjamini–Hochberg), in the order given. Distributions: t_cdf(x, df), t_inv(p, df), \
+                 chi2_cdf(x, df), chi2_inv(p, df), poisson_cdf(k, mean), binom_cdf(k, n, p) — cdf is \
+                 P(X ≤ x); an upper-tail p-value is 1 - cdf.\n\
+                 Finance, spreadsheet signatures and signs (money paid out is negative): \
+                 pmt(rate, nper, pv[, fv[, type]]), fv(rate, nper, pmt[, pv[, type]]), \
+                 pv(rate, nper, pmt[, fv[, type]]), npv(rate, flows…) with the first flow one \
+                 period out, irr(flows[, guess]).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "steps": {
+                        "type": "array",
+                        "description": "Evaluated in order. Example: [{\"name\":\"rate\",\"expr\":\"0.12 / 12\"}, {\"name\":\"payment\",\"expr\":\"pmt(rate, 360, 250000)\"}]",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "description": "Optional. Lets later steps use this value."},
+                                "expr": {"type": "string"}
+                            },
+                            "required": ["expr"]
+                        }
+                    },
+                    "expr": {"type": "string", "description": "A single expression, instead of 'steps'."}
+                }
+            },
+            "annotations": {"readOnlyHint": true, "openWorldHint": false}
+        }),
     ];
 
     if write {
@@ -445,6 +504,7 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Result<Value, Call
         "tuitab_query" => query(server, args),
         "tuitab_describe" => describe_tool(server, args),
         "tuitab_jq" => jq(args),
+        "tuitab_calc" => super::calc::run(args).map_err(CallError::Failed),
         // Named but unavailable: a model that learned the name elsewhere deserves the
         // reason rather than a bafflement about an unknown tool.
         "tuitab_write" | "tuitab_write_apply" if !server.write => Err(CallError::Failed(format!(
